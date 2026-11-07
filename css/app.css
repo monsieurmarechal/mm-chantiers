@@ -75,7 +75,7 @@ label.check input[type=checkbox] { width: 18px; height: 18px; accent-color: var(
 label.inline { display: flex; align-items: center; gap: 6px; font-weight: 600; font-size: .85rem; } label.inline input { width: auto; padding: 6px; }
 .search { margin-bottom: 12px; }
 .info { background: #f1f6e4; border-left: 4px solid var(--green); padding: 9px 12px; border-radius: 6px; margin: 6px 0 12px; font-size: .9rem; }
-.info.warn { background: #fdf1e2; border-left-color: var(--orange); } .info.ok { background: #eef6dc; }
+.info.warn { background: #fdf1e2; border-left-color: var(--orange); } .info.ok { background: #eef6dc; } .info.err { background: #fde8e8; border-left-color: #c0392b; }
 
 /* ---------- Cartes missions ---------- */
 .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; }
@@ -237,6 +237,16 @@ ul.plain { list-style: none; padding: 0; margin: 0; } ul.plain li { padding: 6px
   .pr-box { border: 1px solid #999; min-height: 70px; padding: 6px; margin-top: 10px; color: #555; }
   .pr-sign { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 10px; }
   .pr-sign div { border: 1px solid #999; min-height: 80px; padding: 6px; color: #555; }
+  .pr-day { margin-top: 6px; }
+  .pr-day h3 { break-after: avoid; }
+  .pr-notes { font-size: 8.5pt; color: #444; background: #fafafa; }
+  .pr-photos { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin: 8px 0; }
+  .pr-photos figure { margin: 0; break-inside: avoid; border: 1px solid #ccc; }
+  .pr-photos img { width: 100%; height: 48mm; object-fit: cover; display: block; }
+  .pr-photos figcaption { font-size: 7.5pt; padding: 2px 4px; }
+  .pr-photos small { color: #777; }
+  .pr-sign { break-inside: avoid; }
+  .pr-sigimg { max-width: 100%; max-height: 32mm; display: block; }
   .pr-foot { margin-top: 14px; font-size: 8pt; color: #777; border-top: 1px solid #ddd; padding-top: 4px; }
   #print-area .neg { color: #b00; }
   #print-area .cal-day { min-height: 70px; } #print-area .ev { font-size: 7pt; } #print-area .cal-head { background: var(--anth) !important; }
