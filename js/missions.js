@@ -365,12 +365,16 @@ export async function renderDetail(id) {
     const tz = v.querySelector("#team");
     if (isLeader || staff) {
       tz.innerHTML = `<h4>Pointages de l'équipe · ${fmtDate(workDate)}</h4>
-        <div class="table-wrap"><table class="table"><thead><tr><th>Collaborateur</th><th>Atelier</th><th>Chantier</th><th>Fin</th><th>H. chantier</th></tr></thead><tbody>
+        <div class="table-wrap"><table class="table"><thead><tr><th>Collaborateur</th><th>Atelier</th><th>Chantier</th><th>Fin</th><th>H. chantier</th>${staff ? "<th></th>" : ""}</tr></thead><tbody>
         ${memberIds.map((u) => { const e = entries.find((x) => x.user_id === u); return `<tr><td>${esc(nameOf(u))}</td>
           <td>${fmtTime(e?.workshop_arrival)}</td><td>${fmtTime(e?.site_arrival)}</td><td>${fmtTime(e?.site_end)}</td>
-          <td>${fmtH(hoursBetween(e?.site_arrival, e?.site_end))}</td></tr>`; }).join("")}
+          <td>${fmtH(hoursBetween(e?.site_arrival, e?.site_end))}${e?.edited_by ? ` <span class="badge" title="${esc(e.edit_reason || "")}">corrigé</span>` : ""}</td>
+          ${staff ? `<td class="right"><button class="btn small ghost" data-fix="${u}">${e ? "Corriger" : "Saisir"}</button></td>` : ""}</tr>`; }).join("")}
         </tbody></table></div>
         ${!signed && (isLeader || staff) ? `<a class="btn wide" href="#/mission/${id}/sign/${workDate}">✍ Faire signer le client</a>` : ""}`;
+      tz.querySelectorAll("[data-fix]").forEach((b) => (b.onclick = () => editEntryModal({
+        entry: entries.find((x) => x.user_id === b.dataset.fix), missionId: id, userId: b.dataset.fix, workDate, onDone: drawPointage,
+      })));
     } else tz.innerHTML = isMember && m.team_leader_id ? `<p class="muted small">La signature client est recueillie par ${esc(nameOf(m.team_leader_id))} (chef d'équipe).</p>` : "";
   }
   await drawPointage();
@@ -453,6 +457,53 @@ async function renderPhotos(el, missionId, workDate, locked) {
       renderPhotos(el, missionId, workDate, locked);
     });
   }));
+}
+
+// =====================================================================
+// CORRECTION D'UN POINTAGE PAR ADMIN / RH (y compris après signature)
+// =====================================================================
+export async function editEntryModal({ entry = null, missionId, userId, workDate, onDone }) {
+  if (!isStaff()) return;
+  if (!state.profiles.length) await loadProfiles();
+  const mid = entry?.mission_id ?? +missionId, uid = entry?.user_id ?? userId, wd = entry?.work_date ?? workDate;
+  const [rep] = await q(sb.from("day_reports").select("client_name, signed_at").eq("mission_id", mid).eq("work_date", wd));
+  const md = modal(`Pointage · ${nameOf(uid)} · ${fmtDate(wd)}`, `
+    ${rep ? `<div class="info warn">Journée signée par ${esc(rep.client_name)} le ${fmtDateTime(rep.signed_at)}. La correction est tracée ; le rapport déjà envoyé n'est pas modifié.</div>` : ""}
+    ${entry?.edited_by ? `<p class="muted small">Dernière correction par ${esc(nameOf(entry.edited_by))} le ${fmtDateTime(entry.edited_at)}${entry.edit_reason ? ` : ${esc(entry.edit_reason)}` : ""}</p>` : ""}
+    <form class="form" id="ef">
+      <div class="grid2">
+        <label>Arrivée à l'atelier<input type="time" name="workshop_arrival" value="${toHHMM(entry?.workshop_arrival)}"></label>
+        <label>Arrivée sur chantier<input type="time" name="site_arrival" value="${toHHMM(entry?.site_arrival)}"></label>
+        <label>Fin de chantier<input type="time" name="site_end" value="${toHHMM(entry?.site_end)}"></label>
+      </div>
+      <label>Note<textarea name="note" rows="2">${esc(entry?.note || "")}</textarea></label>
+      <label>Remarque technique<textarea name="technical_note" rows="2">${esc(entry?.technical_note || "")}</textarea></label>
+      <label>Note d'exclusion<textarea name="exclusion_note" rows="2">${esc(entry?.exclusion_note || "")}</textarea></label>
+      <label>Motif de la correction${rep ? " *" : ""}<input name="edit_reason" ${rep ? "required" : ""} placeholder="Ex. oubli de pointage de fin, erreur d'heure"></label>
+      <div class="actions">${entry ? `<button type="button" class="btn danger" id="del">Supprimer le pointage</button>` : ""}<button class="btn" id="sv">Enregistrer</button></div>
+    </form>`, { wide: true });
+  const f = md.el.querySelector("#ef");
+  f.onsubmit = (e) => {
+    e.preventDefault();
+    busy(f.querySelector("#sv"), async () => {
+      const d = formData(f);
+      const row = {
+        workshop_arrival: toIso(wd, d.workshop_arrival), site_arrival: toIso(wd, d.site_arrival), site_end: toIso(wd, d.site_end),
+        note: d.note || null, technical_note: d.technical_note || null, exclusion_note: d.exclusion_note || null,
+        edit_reason: d.edit_reason || null,
+      };
+      if (row.site_arrival && row.site_end && row.site_end < row.site_arrival) throw new Error("La fin de chantier est antérieure à l'arrivée");
+      if (row.workshop_arrival && row.site_arrival && row.site_arrival < row.workshop_arrival) throw new Error("L'arrivée sur chantier est antérieure à l'arrivée à l'atelier");
+      if (entry) await q(sb.from("time_entries").update(row).eq("id", entry.id));
+      else await q(sb.from("time_entries").insert({ ...row, mission_id: mid, user_id: uid, work_date: wd }));
+      md.close(); toast("Pointage corrigé"); onDone?.();
+    });
+  };
+  const del = f.querySelector("#del");
+  if (del) del.onclick = async () => {
+    if (!(await confirmBox(`Supprimer le pointage de ${nameOf(uid)} du ${fmtDate(wd)} ?`))) return;
+    busy(del, async () => { await q(sb.from("time_entries").delete().eq("id", entry.id)); md.close(); toast("Pointage supprimé"); onDone?.(); });
+  };
 }
 
 function punchField(name, label, e, locked) {
