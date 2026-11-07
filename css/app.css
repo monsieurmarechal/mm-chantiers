@@ -162,3 +162,40 @@ ul.plain { list-style: none; padding: 0; margin: 0; } ul.plain li { padding: 6px
   #map { height: 60vh; }
   .filters { flex-direction: column; align-items: stretch; } .filters input, .filters select { width: 100%; }
 }
+
+/* ---------- Pastille de couleur (types de congés) ---------- */
+.dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
+
+/* ---------- Impression ---------- */
+#print-area { display: none; }
+@media print {
+  body.printing { background: #fff; }
+  body.printing > *:not(#print-area) { display: none !important; }
+  body.printing #print-area { display: block; font: 10.5pt/1.4 var(--font); color: #111; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .pr-head { display: flex; justify-content: space-between; align-items: center; background: var(--anth); color: #fff; padding: 8px 14px; border-bottom: 4px solid var(--green); }
+  .pr-brand { display: flex; flex-direction: column; line-height: 1; }
+  .pr-brand .b1 { font-style: italic; font-size: 10pt; font-family: "Brush Script MT", "Segoe Script", cursive; }
+  .pr-brand .b2 { color: var(--green); font-weight: 800; font-size: 16pt; letter-spacing: .04em; }
+  .pr-meta { text-align: right; font-size: 8.5pt; }
+  .pr-title { font-size: 15pt; margin: 12px 0 2px; color: var(--anth); }
+  .pr-sub { margin: 0 0 10px; color: #555; }
+  #print-area h3 { font-size: 11pt; margin: 12px 0 4px; color: var(--anth); border-bottom: 1.5px solid var(--green); padding-bottom: 2px; }
+  #print-area .table-wrap { box-shadow: none; border: 0; overflow: visible; }
+  #print-area .table { font-size: 9pt; border: 1px solid #bbb; }
+  #print-area .table th { background: var(--anth) !important; color: #fff; padding: 5px 6px; white-space: normal; }
+  #print-area .table td { padding: 5px 6px; border: 1px solid #ccc; }
+  #print-area tr { page-break-inside: avoid; }
+  #print-area button, #print-area .btn { display: none !important; }
+  #print-area .kpis { display: flex; flex-wrap: wrap; gap: 6px; }
+  #print-area .kpi { background: #f1f6e4 !important; color: #111; border: 1px solid #cfdcae; padding: 6px 10px; margin: 0; }
+  #print-area .kpi span, #print-area .kpi small { color: #444; } #print-area .kpi b { color: var(--anth); font-size: 13pt; }
+  .pr-kv { width: 100%; border-collapse: collapse; }
+  .pr-kv th { text-align: left; width: 32%; background: #f1f6e4; padding: 5px 8px; border: 1px solid #ccc; font-weight: 600; }
+  .pr-kv td { padding: 5px 8px; border: 1px solid #ccc; }
+  .pr-fill td { height: 26px; }
+  .pr-box { border: 1px solid #999; min-height: 70px; padding: 6px; margin-top: 10px; color: #555; }
+  .pr-sign { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 10px; }
+  .pr-sign div { border: 1px solid #999; min-height: 80px; padding: 6px; color: #555; }
+  .pr-foot { margin-top: 14px; font-size: 8pt; color: #777; border-top: 1px solid #ddd; padding-top: 4px; }
+  #print-area .neg { color: #b00; }
+}
