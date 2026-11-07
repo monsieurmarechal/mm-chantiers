@@ -567,3 +567,9 @@ drop policy if exists oa_upd on public.overtime_adjustments;
 drop policy if exists oa_del on public.overtime_adjustments;
 create policy oa_upd on public.overtime_adjustments for update to authenticated using (is_staff()) with check (is_staff());
 create policy oa_del on public.overtime_adjustments for delete to authenticated using (is_staff());
+
+-- =====================================================================
+-- Migration 004 : admin ET RH peuvent créer / modifier les types de congés
+-- =====================================================================
+drop policy if exists lt_all on public.leave_types;
+create policy lt_all on public.leave_types for all to authenticated using (is_staff()) with check (is_staff());
