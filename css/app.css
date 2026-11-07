@@ -193,12 +193,18 @@ ul.plain { list-style: none; padding: 0; margin: 0; } ul.plain li { padding: 6px
 .ev-m.st-terminee { opacity: .6; } .ev-m.st-en_cours { border-left-color: var(--orange); }
 .ev-l { background: color-mix(in srgb, var(--c) 18%, #fff); color: #2b2826; border-left: 3px solid var(--c); }
 .ev-l.pending { background: #fff; border: 1px dashed var(--c); border-left-width: 3px; }
+.cal-week .cal-day { min-height: 260px; }
+.ev-big { white-space: normal; padding: 5px 7px; font-size: .78rem; }
+.ev-big small { white-space: normal; font-size: .7rem; margin-top: 1px; }
+.cal-dayview { display: grid; grid-template-columns: 2fr 1fr; gap: 14px; }
+.cal-dayview .ev { margin-bottom: 6px; font-size: .9rem; } .cal-dayview .ev small { font-size: .8rem; }
 .cal-legend { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; } .cal-legend .ev { display: inline-block; }
 @media (max-width: 860px) {
   .cal-grid { display: block; border: 0; background: none; }
   .cal-head, .cal-day:not(.has) { display: none; }
   .cal-day { min-height: 0; border: 1px solid var(--line); border-radius: 8px; margin-bottom: 6px; padding: 6px 8px; }
   .cal-wd { display: inline; text-transform: capitalize; } .ev { white-space: normal; font-size: .82rem; }
+  .cal-dayview { grid-template-columns: 1fr; } .cal-week .cal-day { min-height: 0; }
 }
 
 /* ---------- Impression ---------- */
