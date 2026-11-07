@@ -149,6 +149,11 @@ ul.plain { list-style: none; padding: 0; margin: 0; } ul.plain li { padding: 6px
 .toast.err { border-left-color: var(--red); } .toast.warn { border-left-color: var(--orange); }
 @keyframes up { from { transform: translateY(10px); opacity: 0; } }
 
+/* ---------- Bandeau de mise à jour ---------- */
+.update-banner { position: fixed; left: 50%; top: 70px; transform: translateX(-50%); z-index: 150; display: flex; gap: 12px; align-items: center;
+  background: var(--orange); color: #fff; font-weight: 700; padding: 10px 14px; border-radius: 10px; box-shadow: var(--sh); width: max-content; max-width: 94vw; }
+.update-banner .btn { background: #fff; color: var(--anth); }
+
 /* ---------- Mobile ---------- */
 @media (max-width: 860px) {
   .menu-btn { display: block; }
