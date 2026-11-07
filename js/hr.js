@@ -1,6 +1,6 @@
 import {
   sb, state, q, esc, view, toast, modal, confirmBox, busy, formData, isStaff, isAdmin, callFn, ROLES,
-  LEAVE_STATUS, todayStr, fmtDate, fmtDateTime, fmtH, hoursBetween, nameOf, loadProfiles, downloadCsv,
+  LEAVE_STATUS, todayStr, fmtDate, fmtTime, fmtDateTime, fmtH, hoursBetween, nameOf, loadProfiles, downloadCsv,
   loadLeaveTypes, leaveType, fmtQty, businessDays, printDoc,
 } from "./core.js";
 
@@ -207,9 +207,9 @@ export async function renderCounters() {
 
   const tableHtml = (forPrint) => `<div class="table-wrap"><table class="table"><thead><tr><th>Collaborateur</th><th>Heures sup.</th>
     ${counted.map((t) => `<th>${esc(t.label)}<br><small>solde · pris / alloué</small></th>`).join("")}</tr></thead><tbody>
-    ${users.map((u) => `<tr><td><b>${esc(u.full_name)}</b></td>
+    ${users.map((u) => `<tr><td>${forPrint ? `<b>${esc(u.full_name)}</b>` : `<a href="#/compteurs/${u.id}"><b>${esc(u.full_name)}</b></a><br><a class="btn small ghost" href="#/compteurs/${u.id}">Détail</a>`}</td>
       <td><b class="${ctr.overtime(u.id) < 0 ? "neg" : ""}">${fmtH(ctr.overtime(u.id))}</b>
-        ${forPrint ? "" : `<br><button class="btn small ghost" data-ot="${u.id}">Ajuster</button> <button class="btn small ghost" data-hist="${u.id}">Détail</button>`}</td>
+        ${forPrint ? "" : `<br><button class="btn small ghost" data-ot="${u.id}">Ajuster</button> <button class="btn small ghost" data-hist="${u.id}">Mouvements</button>`}</td>
       ${counted.map((t) => `<td>${counterCell(ctr.counter(u.id, t.code), t.unit)}
         ${forPrint ? "" : `<br><button class="btn small ghost" data-alloc="${u.id}|${t.code}">Modifier</button>`}</td>`).join("")}</tr>`).join("")}
     </tbody></table></div>`;
@@ -217,8 +217,8 @@ export async function renderCounters() {
   v.innerHTML = `
     <div class="page-h"><h2>Compteurs de congés et heures sup.</h2>
       <div class="row"><label class="inline">Année <select id="yr">${[year - 1, year, year + 1].map((y) => `<option ${y === year ? "selected" : ""}>${y}</option>`).join("")}</select></label>
-      <button class="btn ghost" id="bulk">Allocation pour tous</button><button class="btn ghost" id="pr">🖨 Imprimer</button></div></div>
-    ${counted.length ? "" : `<div class="info warn">Aucun type de congé avec compteur actif. ${isAdmin() ? `<a href="#/types-conges">Paramétrer les types</a>` : ""}</div>`}
+      <button class="btn ghost" id="newtype">+ Type de congé</button><button class="btn ghost" id="bulk">Allocation pour tous</button><button class="btn ghost" id="pr">🖨 Imprimer</button></div></div>
+    ${counted.length ? "" : `<div class="info warn">Aucun type de congé avec compteur actif. <a href="#/types-conges">Paramétrer les types</a></div>`}
     ${tableHtml(false)}
     <p class="muted small">Solde = alloué − pris (demandes approuvées, année de début). Les demandes en attente sont indiquées à part. Heures sup. : solde cumulé toutes années.</p>`;
 
@@ -231,6 +231,7 @@ export async function renderCounters() {
     editAllocation(uid, code, year, ctr.counter(uid, code).alloc, renderCounters);
   }));
   v.querySelector("#bulk").onclick = () => bulkAllocation(year, counted, users, renderCounters);
+  v.querySelector("#newtype").onclick = () => leaveTypeForm(null, renderCounters);
 }
 
 function editAllocation(uid, code, year, a, refresh) {
@@ -315,10 +316,102 @@ async function overtimeHistory(userId, refresh) {
 }
 
 // =====================================================================
-// TYPES DE CONGÉS (admin)
+// FICHE COMPLÈTE D'UN TRAVAILLEUR (admin / RH)
+// =====================================================================
+export async function renderWorkerSheet(uid) {
+  if (!isStaff()) return (location.hash = "#/conges");
+  const v = view();
+  await Promise.all([loadProfiles(), loadLeaveTypes()]);
+  const p = state.profiles.find((x) => x.id === uid);
+  if (!p) { v.innerHTML = `<div class="panel"><p>Collaborateur introuvable.</p><a class="btn ghost" href="#/compteurs">Retour</a></div>`; return; }
+  const year = +(sessionStorage.getItem("mm_cyear") || new Date().getFullYear());
+  const [ctr, reqs, moves, allocs] = await Promise.all([
+    loadCounters(year, uid),
+    q(sb.from("leave_requests").select("*").eq("user_id", uid).gte("start_date", `${year}-01-01`).lte("start_date", `${year}-12-31`).order("start_date", { ascending: false })),
+    q(sb.from("overtime_adjustments").select("*").eq("user_id", uid).order("created_at", { ascending: false })),
+    q(sb.from("leave_allocations").select("*").eq("user_id", uid).order("year", { ascending: false })),
+  ]);
+  const active = state.leaveTypes.filter((t) => t.active || reqs.some((r) => r.type === t.code));
+  // Quantité prise / en attente pour tout type (avec ou sans compteur)
+  const used = (code, st) => reqs.filter((r) => r.type === code && r.status === st).reduce((s, r) => s + (+r.amount || 0), 0);
+
+  const typesTable = (forPrint) => `<div class="table-wrap"><table class="table"><thead><tr><th>Type de congé</th><th>Droit ${year}</th><th>Pris</th><th>En attente</th><th>Solde disponible</th>${forPrint ? "" : "<th></th>"}</tr></thead><tbody>
+    ${active.map((t) => { const c = ctr.counter(uid, t.code); return `<tr>
+      <td><span class="dot" style="background:${esc(t.color)}"></span><b>${esc(t.label)}</b><br><small class="muted">${t.unit}${t.deducts_overtime ? " · débite les heures sup." : ""}${c.alloc?.note ? " · " + esc(c.alloc.note) : ""}</small></td>
+      <td>${t.has_counter ? fmtQty(c.allowed, t.unit) : t.deducts_overtime ? "Heures sup." : "Sans plafond"}</td>
+      <td>${fmtQty(used(t.code, "approuvee"), t.unit)}</td>
+      <td>${fmtQty(used(t.code, "en_attente"), t.unit)}</td>
+      <td>${t.has_counter ? `<b class="${c.left < 0 ? "neg" : ""}">${fmtQty(c.left, t.unit)}</b>` : t.deducts_overtime ? `<b>${fmtH(ctr.overtime(uid))}</b>` : "-"}</td>
+      ${forPrint ? "" : `<td class="right">${t.has_counter ? `<button class="btn small ghost" data-alloc="${t.code}">Modifier le droit</button>` : ""}</td>`}</tr>`; }).join("")}
+    </tbody></table></div>`;
+
+  const movesTable = (forPrint) => moves.length ? `<div class="table-wrap"><table class="table"><thead><tr><th>Date</th><th>Heures</th><th>Motif</th><th>Par</th>${forPrint ? "" : "<th></th>"}</tr></thead><tbody>
+    ${moves.map((r) => `<tr><td>${fmtDateTime(r.created_at)}</td><td class="${r.hours < 0 ? "neg" : ""}">${fmtH(+r.hours)}</td><td>${esc(r.reason || "")}</td><td>${esc(nameOf(r.created_by))}</td>
+      ${forPrint ? "" : `<td class="right">${r.leave_request_id ? `<small class="muted">lié à une demande</small>` : `<button class="btn small ghost" data-mv="${r.id}">Modifier</button> <button class="btn small danger" data-mvdel="${r.id}">Suppr.</button>`}</td>`}</tr>`).join("")}
+    </tbody></table></div>` : `<p class="muted">Aucun mouvement.</p>`;
+
+  v.innerHTML = `
+    <div class="page-h"><div><a href="#/compteurs" class="back">← Compteurs</a><h2>${esc(p.full_name)}</h2></div>
+      <div class="row"><label class="inline">Année <select id="yr">${[year - 1, year, year + 1].map((y) => `<option ${y === year ? "selected" : ""}>${y}</option>`).join("")}</select></label>
+      <button class="btn ghost" id="pr">🖨 Imprimer la fiche</button></div></div>
+    <div class="grid2">
+      <section class="panel">
+        <h3>Identité</h3>
+        <dl class="dl"><dt>Rôle</dt><dd>${ROLES[p.role]}</dd><dt>E-mail</dt><dd><a href="mailto:${esc(p.email)}">${esc(p.email)}</a></dd>
+          <dt>Téléphone</dt><dd>${p.phone ? `<a href="tel:${esc(p.phone)}">${esc(p.phone)}</a>` : "-"}</dd>
+          <dt>Statut</dt><dd>${p.active ? "Actif" : "Désactivé"}</dd></dl>
+        <div class="kpis" style="margin-top:12px">
+          <div class="kpi"><span>Heures supplémentaires</span><b class="${ctr.overtime(uid) < 0 ? "neg" : ""}">${fmtH(ctr.overtime(uid))}</b></div>
+          ${active.filter((t) => t.has_counter).map((t) => { const c = ctr.counter(uid, t.code); return `<div class="kpi"><span>${esc(t.label)}</span><b class="${c.left < 0 ? "neg" : ""}">${fmtQty(c.left, t.unit)}</b><small>sur ${fmtQty(c.allowed, t.unit)}</small></div>`; }).join("")}
+        </div>
+      </section>
+      <section class="panel">
+        <div class="row between"><h3>Heures supplémentaires</h3><button class="btn small" id="ot">+ Ajuster</button></div>
+        ${movesTable(false)}
+      </section>
+    </div>
+    <section class="panel">
+      <div class="row between"><h3>Congés disponibles ${year}</h3>
+        <button class="btn small ghost" id="newtype">+ Nouveau type de congé</button></div>
+      ${typesTable(false)}
+    </section>
+    <section class="panel">
+      <h3>Demandes ${year}</h3>
+      ${leaveTable(reqs, { edit: true })}
+    </section>`;
+
+  const refresh = () => renderWorkerSheet(uid);
+  v.querySelector("#yr").onchange = (e) => { sessionStorage.setItem("mm_cyear", e.target.value); refresh(); };
+  v.querySelector("#ot").onclick = () => adjustOvertime(uid, refresh);
+  v.querySelector("#newtype").onclick = () => leaveTypeForm(null, refresh);
+  v.querySelectorAll("[data-alloc]").forEach((b) => (b.onclick = () => editAllocation(uid, b.dataset.alloc, year, ctr.counter(uid, b.dataset.alloc).alloc, refresh)));
+  v.querySelectorAll("[data-mvdel]").forEach((b) => (b.onclick = async () => {
+    if (!(await confirmBox("Supprimer ce mouvement d'heures sup. ?"))) return;
+    busy(b, async () => { await q(sb.from("overtime_adjustments").delete().eq("id", b.dataset.mvdel)); refresh(); });
+  }));
+  v.querySelectorAll("[data-mv]").forEach((b) => (b.onclick = () => {
+    const r = moves.find((x) => String(x.id) === b.dataset.mv);
+    const m2 = modal("Modifier le mouvement", `<form class="form" id="mf">
+      <label>Heures<input type="number" step="0.25" name="hours" required value="${r.hours}"></label>
+      <label>Motif<input name="reason" value="${esc(r.reason || "")}"></label>
+      <div class="actions"><button class="btn">Enregistrer</button></div></form>`);
+    const f = m2.el.querySelector("#mf");
+    f.onsubmit = (e) => { e.preventDefault(); busy(f.querySelector("button"), async () => {
+      await q(sb.from("overtime_adjustments").update({ hours: +f.hours.value, reason: f.reason.value }).eq("id", r.id)); m2.close(); refresh(); }); };
+  }));
+  bindLeaveActions(v, refresh);
+  v.querySelector("#pr").onclick = () => printDoc(`Fiche congés ${year} · ${p.full_name}`, `
+    <div class="kpis">${v.querySelector(".kpis").innerHTML}</div>
+    <h3>Congés disponibles ${year}</h3>${typesTable(true)}
+    <h3>Demandes ${year}</h3>${leaveTable(reqs, {}).replace(/<button[^>]*>.*?<\/button>/g, "")}
+    <h3>Mouvements d'heures supplémentaires</h3>${movesTable(true)}`, { subtitle: `${ROLES[p.role]} · ${p.email}` });
+}
+
+// =====================================================================
+// TYPES DE CONGÉS (admin / RH)
 // =====================================================================
 export async function renderLeaveTypes() {
-  if (!isAdmin()) return (location.hash = "#/conges");
+  if (!isStaff()) return (location.hash = "#/conges");
   const v = view();
   const types = await loadLeaveTypes();
   v.innerHTML = `
@@ -340,7 +433,7 @@ export async function renderLeaveTypes() {
   }));
 }
 
-function leaveTypeForm(t = null) {
+function leaveTypeForm(t = null, onDone = renderLeaveTypes) {
   const md = modal(t ? `Modifier « ${t.label} »` : "Nouveau type de congé", `
     <form class="form" id="tf">
       <label>Libellé *<input name="label" required value="${esc(t?.label || "")}" placeholder="Ex. Petit chômage"></label>
@@ -366,103 +459,119 @@ function leaveTypeForm(t = null) {
         const code = row.label.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "").slice(0, 40);
         await q(sb.from("leave_types").insert({ ...row, code }));
       }
-      md.close(); renderLeaveTypes();
+      md.close(); toast(t ? "Type de congé modifié" : "Type de congé créé"); onDone();
     });
   };
 }
 
 // =====================================================================
-// RÉCAPITULATIF RH DES PRESTATIONS
+// RÉCAPITULATIF RH DES PRESTATIONS : une ligne par jour et par chantier
 // =====================================================================
-function periodKey(dateStr, mode) {
-  if (mode === "jour") return dateStr;
-  if (mode === "mois") return dateStr.slice(0, 7);
-  // Semaine ISO
-  const d = new Date(dateStr + "T12:00:00");
-  const day = (d.getDay() + 6) % 7;
-  d.setDate(d.getDate() - day + 3);
-  const firstThu = new Date(d.getFullYear(), 0, 4);
-  const wk = 1 + Math.round(((d - firstThu) / 864e5 - 3 + ((firstThu.getDay() + 6) % 7)) / 7);
-  return `${d.getFullYear()}-S${String(wk).padStart(2, "0")}`;
+// Bornes de la période affichée (jour, semaine ISO lundi-dimanche, mois)
+function periodRange(ref, mode) {
+  const d = new Date(ref + "T12:00:00");
+  if (mode === "jour") return { from: ref, to: ref, label: d.toLocaleDateString("fr-BE", { weekday: "long", day: "numeric", month: "long", year: "numeric" }) };
+  if (mode === "semaine") {
+    const mon = new Date(d); mon.setDate(d.getDate() - ((d.getDay() + 6) % 7));
+    const sun = new Date(mon); sun.setDate(mon.getDate() + 6);
+    const thu = new Date(mon); thu.setDate(mon.getDate() + 3);
+    const wk = 1 + Math.round(((thu - new Date(thu.getFullYear(), 0, 4)) / 864e5 - 3 + ((new Date(thu.getFullYear(), 0, 4).getDay() + 6) % 7)) / 7);
+    return { from: todayStr(mon), to: todayStr(sun), label: `Semaine ${wk} · du ${fmtDate(todayStr(mon))} au ${fmtDate(todayStr(sun))}` };
+  }
+  const first = new Date(d.getFullYear(), d.getMonth(), 1), last = new Date(d.getFullYear(), d.getMonth() + 1, 0);
+  return { from: todayStr(first), to: todayStr(last), label: first.toLocaleDateString("fr-BE", { month: "long", year: "numeric" }) };
 }
-const periodLabel = (k, mode) => mode === "jour" ? fmtDate(k)
-  : mode === "mois" ? new Date(k + "-15").toLocaleDateString("fr-BE", { month: "long", year: "numeric" }) : k.replace("-S", " · sem. ");
+function shiftRef(ref, mode, dir) {
+  const d = new Date(ref + "T12:00:00");
+  if (mode === "jour") d.setDate(d.getDate() + dir);
+  else if (mode === "semaine") d.setDate(d.getDate() + 7 * dir);
+  else d.setMonth(d.getMonth() + dir, 1);
+  return todayStr(d);
+}
 
 export async function renderRecap() {
   if (!isStaff()) return (location.hash = "#/missions");
   const v = view();
   await loadProfiles();
-  const now = new Date();
-  const saved = JSON.parse(sessionStorage.getItem("mm_recap") || "{}");
-  const from = saved.from || todayStr(new Date(now.getFullYear(), now.getMonth(), 1));
-  const to = saved.to || todayStr();
-  const mode = saved.mode || "semaine";
-  const who = saved.who || "";
+  const saved = JSON.parse(sessionStorage.getItem("mm_recap2") || "{}");
+  let mode = saved.mode || "semaine";
+  let ref = saved.ref || todayStr();
+  let who = saved.who || "";
 
   v.innerHTML = `
-    <div class="page-h"><h2>Récapitulatif des prestations</h2></div>
-    <form class="filters" id="rf">
-      <label>Du<input type="date" name="from" value="${from}"></label>
-      <label>Au<input type="date" name="to" value="${to}"></label>
-      <label>Regrouper par<select name="mode">${["jour", "semaine", "mois"].map((x) => `<option ${x === mode ? "selected" : ""}>${x}</option>`).join("")}</select></label>
-      <label>Collaborateur<select name="who"><option value="">Tous</option>${state.profiles.map((p) => `<option value="${p.id}" ${p.id === who ? "selected" : ""}>${esc(p.full_name)}</option>`).join("")}</select></label>
-      <button class="btn ghost">Afficher</button><button type="button" class="btn ghost" id="csv">Export CSV</button><button type="button" class="btn ghost" id="prt">🖨 Imprimer</button>
-    </form>
+    <div class="page-h"><h2>Récapitulatif des prestations</h2>
+      <div><button type="button" class="btn ghost" id="csv">Export CSV</button> <button type="button" class="btn ghost" id="prt">🖨 Imprimer</button></div></div>
+    <div class="filters">
+      <div class="seg" id="mode">${["jour", "semaine", "mois"].map((m) => `<button type="button" data-m="${m}" class="${m === mode ? "on" : ""}">${m[0].toUpperCase() + m.slice(1)}</button>`).join("")}</div>
+      <div class="row nav-period"><button type="button" class="btn ghost small" id="prev">◀</button>
+        <input type="date" id="ref" value="${ref}"><button type="button" class="btn ghost small" id="next">▶</button>
+        <button type="button" class="btn ghost small" id="today">Aujourd'hui</button></div>
+      <label>Collaborateur<select id="who"><option value="">Tous</option>${state.profiles.map((p) => `<option value="${p.id}" ${p.id === who ? "selected" : ""}>${esc(p.full_name)}</option>`).join("")}</select></label>
+    </div>
+    <h3 id="plabel"></h3>
     <div id="out"><p class="muted">Chargement…</p></div>`;
-  const rf = v.querySelector("#rf");
-  let lastRows = [];
+
+  let rows = [], range = null;
 
   const load = async () => {
-    const d = formData(rf);
-    sessionStorage.setItem("mm_recap", JSON.stringify(d));
-    let qy = sb.from("time_entries").select("*, missions(title, clients(name))").gte("work_date", d.from).lte("work_date", d.to).order("work_date");
-    if (d.who) qy = qy.eq("user_id", d.who);
-    const rows = await q(qy);
-    // Agrégation : personne x période
-    const agg = new Map();
-    for (const e of rows) {
-      const key = `${e.user_id}|${periodKey(e.work_date, d.mode)}`;
-      const a = agg.get(key) || { user: e.user_id, period: periodKey(e.work_date, d.mode), days: new Set(), site: 0, total: 0, travel: 0, missions: new Set(), open: 0 };
-      a.days.add(e.work_date);
-      a.site += hoursBetween(e.site_arrival, e.site_end);
-      a.total += hoursBetween(e.workshop_arrival, e.site_end);
-      a.travel += hoursBetween(e.workshop_arrival, e.site_arrival);
-      a.missions.add(e.missions?.title || e.mission_id);
-      if (!e.site_end) a.open++;
-      agg.set(key, a);
-    }
-    const list = [...agg.values()].sort((a, b) => nameOf(a.user).localeCompare(nameOf(b.user)) || a.period.localeCompare(b.period));
-    lastRows = list.map((a) => [nameOf(a.user), periodLabel(a.period, d.mode), a.days.size, a.travel.toFixed(2), a.site.toFixed(2), a.total.toFixed(2), [...a.missions].join(" / ")]);
+    sessionStorage.setItem("mm_recap2", JSON.stringify({ mode, ref, who }));
+    range = periodRange(ref, mode);
+    v.querySelector("#plabel").textContent = range.label.charAt(0).toUpperCase() + range.label.slice(1);
+    v.querySelectorAll("#mode button").forEach((b) => b.classList.toggle("on", b.dataset.m === mode));
+    v.querySelector("#ref").value = ref;
+    let qy = sb.from("time_entries").select("*, missions(id, title, clients(name))")
+      .gte("work_date", range.from).lte("work_date", range.to).order("work_date").order("site_arrival");
+    if (who) qy = qy.eq("user_id", who);
+    const data = await q(qy);
+    rows = data.map((e) => ({
+      e, date: e.work_date, user: e.user_id,
+      travel: hoursBetween(e.workshop_arrival, e.site_arrival),
+      site: hoursBetween(e.site_arrival, e.site_end),
+      total: hoursBetween(e.workshop_arrival, e.site_end),
+    })).sort((a, b) => a.date.localeCompare(b.date) || nameOf(a.user).localeCompare(nameOf(b.user)));
 
-    // Totaux par personne
-    const perUser = new Map();
-    for (const a of list) {
-      const t = perUser.get(a.user) || { site: 0, total: 0, days: 0 };
-      t.site += a.site; t.total += a.total; t.days += a.days.size; perUser.set(a.user, t);
+    // Totaux par collaborateur sur la période
+    const per = new Map();
+    for (const r of rows) {
+      const t = per.get(r.user) || { site: 0, total: 0, days: new Set() };
+      t.site += r.site; t.total += r.total; t.days.add(r.date); per.set(r.user, t);
     }
+    const sum = (k) => rows.reduce((s, r) => s + r[k], 0);
 
-    v.querySelector("#out").innerHTML = list.length ? `
-      <div class="kpis">${[...perUser.entries()].map(([u, t]) => `<div class="kpi"><span>${esc(nameOf(u))}</span><b>${fmtH(t.total)}</b>
-        <small>${t.days} j · chantier ${fmtH(t.site)}</small></div>`).join("")}</div>
-      <div class="table-wrap"><table class="table"><thead><tr><th>Collaborateur</th><th>Période</th><th>Jours</th><th>Trajet aller</th><th>Sur chantier</th><th>Total journée</th><th>Chantiers</th></tr></thead><tbody>
-      ${list.map((a) => `<tr><td>${esc(nameOf(a.user))}</td><td>${periodLabel(a.period, d.mode)}</td><td>${a.days.size}</td>
-        <td>${fmtH(a.travel)}</td><td>${fmtH(a.site)}</td><td><b>${fmtH(a.total)}</b>${a.open ? ` <span class="badge st-annulee" title="Pointage incomplet">${a.open} incomplet</span>` : ""}</td>
-        <td class="small">${esc([...a.missions].join(", "))}</td></tr>`).join("")}
-      </tbody></table></div>
-      <p class="muted small">Total journée = arrivée atelier → fin de chantier. Trajet aller = atelier → arrivée chantier.</p>`
-      : `<p class="muted">Aucun pointage sur la période.</p>`;
+    v.querySelector("#out").innerHTML = rows.length ? `
+      <div class="kpis">${[...per.entries()].sort((a, b) => nameOf(a[0]).localeCompare(nameOf(b[0]))).map(([u, t]) => `<div class="kpi"><span>${esc(nameOf(u))}</span><b>${fmtH(t.total)}</b>
+        <small>${t.days.size} j · chantier ${fmtH(t.site)}</small></div>`).join("")}</div>
+      <div class="table-wrap"><table class="table"><thead><tr><th>Date</th><th>Collaborateur</th><th>Chantier</th><th>Arrivée atelier</th><th>Arrivée chantier</th><th>Fin</th>
+        <th>Trajet</th><th>Sur chantier</th><th>Total</th><th>Remarques</th></tr></thead><tbody>
+      ${rows.map((r, i) => `<tr class="${i && rows[i - 1].date !== r.date ? "day-sep" : ""}">
+        <td>${new Date(r.date + "T12:00:00").toLocaleDateString("fr-BE", { weekday: "short", day: "2-digit", month: "2-digit" })}</td>
+        <td>${esc(nameOf(r.user))}</td>
+        <td><a href="#/mission/${r.e.mission_id}">${esc(r.e.missions?.title || "#" + r.e.mission_id)}</a><br><small class="muted">${esc(r.e.missions?.clients?.name || "")}</small></td>
+        <td>${fmtTime(r.e.workshop_arrival)}</td><td>${fmtTime(r.e.site_arrival)}</td>
+        <td>${r.e.site_end ? fmtTime(r.e.site_end) : `<span class="badge st-annulee">En cours / incomplet</span>`}</td>
+        <td>${fmtH(r.travel)}</td><td>${fmtH(r.site)}</td><td><b>${fmtH(r.total)}</b></td>
+        <td class="small">${[r.e.note, r.e.technical_note && "Tech. : " + r.e.technical_note, r.e.exclusion_note && "Excl. : " + r.e.exclusion_note].filter(Boolean).map(esc).join("<br>")}</td></tr>`).join("")}
+      </tbody><tfoot><tr><th colspan="6">Total période (${rows.length} prestation${rows.length > 1 ? "s" : ""})</th><th>${fmtH(sum("travel"))}</th><th>${fmtH(sum("site"))}</th><th>${fmtH(sum("total"))}</th><th></th></tr></tfoot></table></div>
+      <p class="muted small">Total = arrivée atelier → fin de chantier. Trajet = atelier → arrivée chantier.</p>`
+      : `<p class="muted">Aucune prestation sur cette période.</p>`;
   };
-  rf.onsubmit = (e) => { e.preventDefault(); load().catch((er) => toast(er.message, "err")); };
-  v.querySelector("#prt").onclick = () => {
-    const d = formData(rf);
-    const out = v.querySelector("#out").cloneNode(true);
-    printDoc("Récapitulatif des prestations", out.innerHTML, {
-      landscape: true,
-      subtitle: `Du ${fmtDate(d.from)} au ${fmtDate(d.to)} · regroupement par ${d.mode}${d.who ? " · " + nameOf(d.who) : ""}`,
-    });
-  };
-  v.querySelector("#csv").onclick = () => downloadCsv(`prestations_${formData(rf).from}_${formData(rf).to}.csv`,
-    [["Collaborateur", "Période", "Jours", "Trajet aller (h)", "Sur chantier (h)", "Total journée (h)", "Chantiers"], ...lastRows]);
+
+  const reload = () => load().catch((er) => toast(er.message, "err"));
+  v.querySelectorAll("#mode button").forEach((b) => (b.onclick = () => { mode = b.dataset.m; reload(); }));
+  v.querySelector("#prev").onclick = () => { ref = shiftRef(ref, mode, -1); reload(); };
+  v.querySelector("#next").onclick = () => { ref = shiftRef(ref, mode, 1); reload(); };
+  v.querySelector("#today").onclick = () => { ref = todayStr(); reload(); };
+  v.querySelector("#ref").onchange = (e) => { if (e.target.value) { ref = e.target.value; reload(); } };
+  v.querySelector("#who").onchange = (e) => { who = e.target.value; reload(); };
+
+  v.querySelector("#csv").onclick = () => downloadCsv(`prestations_${range.from}_${range.to}.csv`, [
+    ["Date", "Collaborateur", "Chantier", "Client", "Arrivée atelier", "Arrivée chantier", "Fin chantier", "Trajet (h)", "Sur chantier (h)", "Total (h)", "Note", "Remarque technique", "Exclusion"],
+    ...rows.map((r) => [fmtDate(r.date), nameOf(r.user), r.e.missions?.title, r.e.missions?.clients?.name, fmtTime(r.e.workshop_arrival), fmtTime(r.e.site_arrival),
+      fmtTime(r.e.site_end), r.travel.toFixed(2), r.site.toFixed(2), r.total.toFixed(2), r.e.note, r.e.technical_note, r.e.exclusion_note]),
+  ]);
+  v.querySelector("#prt").onclick = () => printDoc("Récapitulatif des prestations", v.querySelector("#out").innerHTML, {
+    landscape: true, subtitle: `${v.querySelector("#plabel").textContent}${who ? " · " + nameOf(who) : ""}`,
+  });
   await load();
 }
 
