@@ -25,9 +25,10 @@ const hrs = (a: string | null, b: string | null) =>
 const esc = (s: unknown) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]!));
 
 function toBase64(buf: ArrayBuffer) {
-  let s = ""; const b = new Uint8Array(buf);
-  for (let i = 0; i < b.length; i++) s += String.fromCharCode(b[i]);
-  return btoa(s);
+  // Encodage par blocs de 32 Ko (rapide, compatible limite CPU des Edge Functions)
+  const b = new Uint8Array(buf); const parts: string[] = [];
+  for (let i = 0; i < b.length; i += 0x8000) parts.push(String.fromCharCode(...b.subarray(i, i + 0x8000)));
+  return btoa(parts.join(""));
 }
 
 Deno.serve(async (req) => {
@@ -76,6 +77,23 @@ Deno.serve(async (req) => {
     const { data: sig } = await admin.storage.from("signatures").download(rep.signature_path);
     if (sig) attachments.push({ filename: "signature-client.png", content: toBase64(await sig.arrayBuffer()) });
 
+    // Photos de réalisation de la journée (max 20, ~8 Mo au total)
+    const { data: photos } = await admin.from("mission_photos").select("path, caption")
+      .eq("mission_id", rep.mission_id).eq("work_date", rep.work_date).order("created_at").limit(20);
+    let total = 0, n = 0;
+    for (const p of photos ?? []) {
+      const { data: img } = await admin.storage.from("mission-photos").download(p.path);
+      if (!img) continue;
+      const buf = await img.arrayBuffer();
+      if (total + buf.byteLength > 8_000_000) break;
+      total += buf.byteLength; n++;
+      const label = (p.caption ?? "").normalize("NFD").replace(/[^\w-]+/g, "_").slice(0, 40);
+      attachments.push({ filename: `photo-${String(n).padStart(2, "0")}${label ? "-" + label : ""}.jpg`, content: toBase64(buf) });
+    }
+    const photoNote = (photos?.length ?? 0)
+      ? `<p><b>Photos de réalisation :</b> ${n} jointe(s)${(photos?.length ?? 0) > n ? ` sur ${photos!.length} (les autres sont consultables dans l'application)` : ""}.</p>`
+      : "";
+
     const key = Deno.env.get("RESEND_API_KEY");
     if (!key) return json({ error: "RESEND_API_KEY non configurée" }, 500);
     const r = await fetch("https://api.resend.com/emails", {
@@ -83,7 +101,8 @@ Deno.serve(async (req) => {
       headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
       body: JSON.stringify({
         from: Deno.env.get("MAIL_FROM") ?? "Monsieur Maréchal <onboarding@resend.dev>",
-        to: [to], subject: `Rapport chantier #${m.id} ${m.title} - ${rep.work_date}`, html, attachments,
+        to: [to], subject: `Rapport chantier #${m.id} ${m.title} - ${rep.work_date}`,
+        html: html + photoNote, attachments,
       }),
     });
     if (!r.ok) return json({ error: await r.text() }, 502);
