@@ -1,5 +1,5 @@
 import {
-  sb, state, q, esc, view, toast, modal, confirmBox, busy, formData, isStaff, isAdmin, fmtDateTime, nameOf, loadProfiles, loadSettings, downloadCsv,
+  sb, state, q, esc, view, toast, modal, confirmBox, busy, formData, isStaff, isAdmin, fmtDateTime, nameOf, loadProfiles, loadSettings, downloadCsv, printDoc,
 } from "./core.js";
 import { geocode, locateFromWorkshop } from "./geo.js";
 
@@ -12,7 +12,7 @@ export async function renderTools() {
   const tools = await q(sb.from("tools").select("*").order("category").order("name"));
   v.innerHTML = `
     <div class="page-h"><h2>Outils du magasin central</h2>
-      <div><button class="btn ghost" id="csv">Export CSV</button> <button class="btn" id="add">+ Ajouter un outil</button></div></div>
+      <div><button class="btn ghost" id="prt">🖨 Imprimer</button> <button class="btn ghost" id="csv">Export CSV</button> <button class="btn" id="add">+ Ajouter un outil</button></div></div>
     <input type="search" id="s" placeholder="Rechercher un outil, une catégorie, une référence…" class="search">
     <div class="table-wrap"><table class="table" id="tt"><thead><tr><th>Outil</th><th>Catégorie</th><th>Référence</th><th>Qté</th><th>Emplacement</th><th></th></tr></thead><tbody>
     ${tools.map((t) => `<tr data-s="${esc(`${t.name} ${t.category || ""} ${t.reference || ""}`.toLowerCase())}">
@@ -28,6 +28,13 @@ export async function renderTools() {
   };
   v.querySelector("#csv").onclick = () => downloadCsv("outils.csv",
     [["Outil", "Catégorie", "Référence", "Quantité", "Emplacement", "Notes"], ...tools.map((t) => [t.name, t.category, t.reference, t.quantity, t.location, t.notes])]);
+  v.querySelector("#prt").onclick = () => {
+    const s = v.querySelector("#s").value.toLowerCase();
+    const list = tools.filter((t) => `${t.name} ${t.category || ""} ${t.reference || ""}`.toLowerCase().includes(s));
+    printDoc("Inventaire des outils du magasin central", `<table class="table"><thead><tr><th>Outil</th><th>Catégorie</th><th>Référence</th><th>Qté</th><th>Emplacement</th><th>Notes</th></tr></thead><tbody>
+      ${list.map((t) => `<tr><td><b>${esc(t.name)}</b></td><td>${esc(t.category || "")}</td><td>${esc(t.reference || "")}</td><td>${t.quantity}</td><td>${esc(t.location || "")}</td><td>${esc(t.notes || "")}</td></tr>`).join("")}
+      </tbody></table>`, { subtitle: `${list.length} outil(s)${s ? ` · filtre « ${s} »` : ""}` });
+  };
   v.querySelector("#add").onclick = () => toolForm();
   v.querySelectorAll("[data-edit]").forEach((b) => (b.onclick = () => toolForm(tools.find((t) => String(t.id) === b.dataset.edit))));
   v.querySelectorAll("[data-del]").forEach((b) => (b.onclick = async () => {
@@ -68,7 +75,7 @@ export async function renderClients() {
   const v = view();
   const clients = await q(sb.from("clients").select("*").order("name"));
   v.innerHTML = `
-    <div class="page-h"><h2>Clients</h2><button class="btn" id="add">+ Nouveau client</button></div>
+    <div class="page-h"><h2>Clients</h2><div><button class="btn ghost" id="prt">🖨 Imprimer</button> <button class="btn" id="add">+ Nouveau client</button></div></div>
     <input type="search" id="s" placeholder="Rechercher un client, une commune…" class="search">
     <div class="table-wrap"><table class="table" id="ct"><thead><tr><th>Client</th><th>Contact</th><th>Adresse</th><th>Distance atelier</th><th></th></tr></thead><tbody>
     ${clients.map((c) => `<tr data-s="${esc(`${c.name} ${c.address} ${c.contact || ""}`.toLowerCase())}">
@@ -82,6 +89,13 @@ export async function renderClients() {
   v.querySelector("#s").oninput = (e) => {
     const s = e.target.value.toLowerCase();
     v.querySelectorAll("#ct tbody tr[data-s]").forEach((r) => (r.style.display = r.dataset.s.includes(s) ? "" : "none"));
+  };
+  v.querySelector("#prt").onclick = () => {
+    const s = v.querySelector("#s").value.toLowerCase();
+    const list = clients.filter((c) => `${c.name} ${c.address} ${c.contact || ""}`.toLowerCase().includes(s));
+    printDoc("Liste des clients", `<table class="table"><thead><tr><th>Client</th><th>Contact</th><th>Téléphone</th><th>E-mail</th><th>Adresse</th><th>Distance</th></tr></thead><tbody>
+      ${list.map((c) => `<tr><td><b>${esc(c.name)}</b></td><td>${esc(c.contact || "")}</td><td>${esc(c.phone || "")}</td><td>${esc(c.email || "")}</td><td>${esc(c.address)}</td><td>${c.distance_km != null ? c.distance_km + " km" : ""}</td></tr>`).join("")}
+      </tbody></table>`, { landscape: true, subtitle: `${list.length} client(s)${s ? ` · filtre « ${s} »` : ""}` });
   };
   v.querySelector("#add").onclick = () => clientForm();
   v.querySelectorAll("[data-edit]").forEach((b) => (b.onclick = () => clientForm(clients.find((c) => String(c.id) === b.dataset.edit))));
