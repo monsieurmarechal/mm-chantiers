@@ -103,6 +103,16 @@ label.inline { display: flex; align-items: center; gap: 6px; font-weight: 600; f
 .sigwrap { border: 2px dashed var(--anth-3); border-radius: 8px; background: #fff; margin-bottom: 8px; }
 #sig { width: 100%; height: 220px; display: block; touch-action: none; cursor: crosshair; }
 
+/* ---------- Photos ---------- */
+.photo-add { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 6px; }
+.photo-add input[type=text] { flex: 1; min-width: 180px; padding: 7px 9px; }
+.gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 8px; margin: 8px 0 14px; }
+.gallery figure { margin: 0; position: relative; background: #faf9f7; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.gallery img { width: 100%; aspect-ratio: 4 / 3; object-fit: cover; display: block; }
+.gallery figcaption { font-size: .75rem; padding: 4px 6px; display: flex; flex-direction: column; }
+.gallery figcaption small { color: var(--muted); }
+.gallery .del { position: absolute; top: 4px; right: 4px; background: rgba(255,255,255,.9); font-size: .9rem; padding: 3px 6px; }
+
 /* ---------- Tableaux ---------- */
 .table-wrap { overflow-x: auto; background: #fff; border-radius: var(--r); box-shadow: var(--sh); margin-bottom: 10px; }
 .panel .table-wrap { box-shadow: none; border: 1px solid var(--line); }
