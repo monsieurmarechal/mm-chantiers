@@ -1,5 +1,7 @@
-// Edge Function : envoi par e-mail du rapport journalier signé par le client.
-// Appelée par l'application juste après la signature.
+// Edge Function : envoi par e-mail du rapport d'intervention d'une journée.
+// Appelée automatiquement après la signature client, ou à la demande
+// (bouton « Envoyer le rapport d'intervention ») par un membre de l'équipe, l'admin ou le RH.
+// Corps : { report_id } ou { mission_id, work_date }, option { cc_client: true }.
 import { createClient } from "npm:@supabase/supabase-js@2";
 
 // Clé serveur : variable historique, ou nouvelle clé secrète (sb_secret_…) selon le projet
@@ -40,20 +42,43 @@ Deno.serve(async (req) => {
     const { data: caller } = await admin.auth.getUser(jwt);
     if (!caller?.user) return json({ error: "Non authentifié" }, 401);
 
-    const { report_id } = await req.json();
-    const { data: rep } = await admin.from("day_reports").select("*").eq("id", report_id).single();
-    if (!rep) return json({ error: "Rapport introuvable" }, 404);
-    const { data: m } = await admin.from("missions").select("*, clients(name)").eq("id", rep.mission_id).single();
-    if (m.team_leader_id !== caller.user.id) {
-      const { data: me } = await admin.from("profiles").select("role").eq("id", caller.user.id).single();
-      if (!me || !["admin", "rh"].includes(me.role)) return json({ error: "Accès refusé" }, 403);
+    const body = await req.json();
+    let rep: any = null;
+    if (body.report_id) {
+      const { data } = await admin.from("day_reports").select("*").eq("id", body.report_id).single();
+      rep = data;
+      if (!rep) return json({ error: "Rapport introuvable" }, 404);
     }
-    const { data: entries } = await admin.from("time_entries").select("*, profiles(full_name)")
-      .eq("mission_id", rep.mission_id).eq("work_date", rep.work_date);
+    const missionId = rep?.mission_id ?? Number(body.mission_id);
+    const workDate = rep?.work_date ?? String(body.work_date ?? "");
+    if (!missionId || !/^\d{4}-\d{2}-\d{2}$/.test(workDate)) return json({ error: "Chantier ou date invalide" }, 400);
+    if (!rep) {
+      const { data } = await admin.from("day_reports").select("*").eq("mission_id", missionId).eq("work_date", workDate).maybeSingle();
+      rep = data;
+    }
+    const { data: m } = await admin.from("missions").select("*, clients(name, email)").eq("id", missionId).single();
+    if (!m) return json({ error: "Chantier introuvable" }, 404);
+
+    // Droits : chef d'équipe, membre de l'équipe, admin ou RH
+    const { data: me } = await admin.from("profiles").select("role, full_name, active").eq("id", caller.user.id).single();
+    const staff = !!me && me.active !== false && ["admin", "rh"].includes(me.role);
+    if (!staff && m.team_leader_id !== caller.user.id) {
+      const { data: mem } = await admin.from("mission_members").select("user_id")
+        .eq("mission_id", missionId).eq("user_id", caller.user.id).maybeSingle();
+      if (!mem) return json({ error: "Accès refusé" }, 403);
+    }
+
+    const { data: entries } = await admin.from("time_entries").select("*, profiles!time_entries_user_id_fkey(full_name)")
+      .eq("mission_id", missionId).eq("work_date", workDate).order("site_arrival");
+    if (!rep && !(entries ?? []).length) return json({ error: "Aucun pointage pour cette journée" }, 400);
     const { data: settings } = await admin.from("settings").select("*").eq("id", 1).single();
-    const { data: leader } = await admin.from("profiles").select("full_name").eq("id", rep.leader_id).single();
+    const { data: leader } = rep?.leader_id
+      ? await admin.from("profiles").select("full_name").eq("id", rep.leader_id).single() : { data: null };
     const to = settings?.report_email;
     if (!to) return json({ error: "Adresse e-mail de rapport non définie dans Paramètres" }, 400);
+    const recipients = [to];
+    const clientMail = (m.clients?.email ?? "").trim();
+    if (body.cc_client && clientMail && clientMail.toLowerCase() !== to.toLowerCase()) recipients.push(clientMail);
 
     const rows = (entries ?? []).map((e: any) => `<tr>
       <td>${esc(e.profiles?.full_name)}</td><td>${fmtT(e.workshop_arrival)}</td><td>${fmtT(e.site_arrival)}</td>
@@ -64,22 +89,24 @@ Deno.serve(async (req) => {
 
     const html = `<div style="font-family:Arial,sans-serif;color:#222">
       <div style="background:#3D3836;color:#fff;padding:14px 18px"><b style="color:#95C11F;font-size:18px">MONSIEUR MARÉCHAL</b>
-      <div>Rapport de prestation du ${new Date(rep.work_date).toLocaleDateString("fr-BE")}</div></div>
+      <div>Rapport d'intervention du ${new Date(workDate).toLocaleDateString("fr-BE")}</div></div>
       <p><b>Chantier :</b> ${esc(m.title)} (#${m.id})<br><b>Client :</b> ${esc(m.clients?.name ?? "")}<br>
-      <b>Adresse :</b> ${esc(m.address)}<br><b>Chef d'équipe :</b> ${esc(leader?.full_name)}</p>
+      <b>Adresse :</b> ${esc(m.address)}<br><b>Chef d'équipe :</b> ${esc(leader?.full_name ?? "")}<br>
+      <b>Envoyé par :</b> ${esc(me?.full_name ?? "")}</p>
       <table cellpadding="6" style="border-collapse:collapse;font-size:13px" border="1">
       <tr style="background:#95C11F;color:#fff"><th>Collaborateur</th><th>Arrivée atelier</th><th>Arrivée chantier</th>
       <th>Fin chantier</th><th>H. chantier</th><th>H. totales</th></tr>${rows}</table>
-      <p><b>Accord client :</b> ${esc(rep.client_name)}, signé le ${new Date(rep.signed_at).toLocaleString("fr-BE", { timeZone: "Europe/Brussels" })}.<br>
-      Signature en pièce jointe.</p></div>`;
+      ${rep
+        ? `<p><b>Accord client :</b> ${esc(rep.client_name)}, signé le ${new Date(rep.signed_at).toLocaleString("fr-BE", { timeZone: "Europe/Brussels" })}.<br>Signature en pièce jointe.</p>`
+        : `<p style="color:#b45309"><b>Journée non signée par le client</b> à la date d'envoi.</p>`}</div>`;
 
     const attachments: any[] = [];
-    const { data: sig } = await admin.storage.from("signatures").download(rep.signature_path);
+    const { data: sig } = rep ? await admin.storage.from("signatures").download(rep.signature_path) : { data: null };
     if (sig) attachments.push({ filename: "signature-client.png", content: toBase64(await sig.arrayBuffer()) });
 
     // Photos de réalisation de la journée (max 20, ~8 Mo au total)
     const { data: photos } = await admin.from("mission_photos").select("path, caption")
-      .eq("mission_id", rep.mission_id).eq("work_date", rep.work_date).order("created_at").limit(20);
+      .eq("mission_id", missionId).eq("work_date", workDate).order("created_at").limit(20);
     let total = 0, n = 0;
     for (const p of photos ?? []) {
       const { data: img } = await admin.storage.from("mission-photos").download(p.path);
@@ -101,13 +128,13 @@ Deno.serve(async (req) => {
       headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
       body: JSON.stringify({
         from: Deno.env.get("MAIL_FROM") ?? "Monsieur Maréchal <onboarding@resend.dev>",
-        to: [to], subject: `Rapport chantier #${m.id} ${m.title} - ${rep.work_date}`,
+        to: recipients, subject: `Rapport d'intervention #${m.id} ${m.title} - ${workDate}${rep ? "" : " (non signé)"}`,
         html: html + photoNote, attachments,
       }),
     });
     if (!r.ok) return json({ error: await r.text() }, 502);
-    await admin.from("day_reports").update({ emailed: true }).eq("id", rep.id);
-    return json({ ok: true });
+    if (rep) await admin.from("day_reports").update({ emailed: true }).eq("id", rep.id);
+    return json({ ok: true, signed: !!rep, to: recipients });
   } catch (e) {
     return json({ error: String(e) }, 500);
   }
