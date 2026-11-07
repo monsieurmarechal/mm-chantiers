@@ -573,3 +573,34 @@ create policy oa_del on public.overtime_adjustments for delete to authenticated 
 -- =====================================================================
 drop policy if exists lt_all on public.leave_types;
 create policy lt_all on public.leave_types for all to authenticated using (is_staff()) with check (is_staff());
+
+-- =====================================================================
+-- Migration 005 : correction des pointages par admin / RH, avec traçabilité
+-- =====================================================================
+alter table public.time_entries add column if not exists edited_by uuid references public.profiles(id) on delete set null;
+alter table public.time_entries add column if not exists edited_at timestamptz;
+alter table public.time_entries add column if not exists edit_reason text;
+
+-- Verrouillage après signature (sauf admin/RH) + trace automatique des corrections
+create or replace function public.lock_signed_entries() returns trigger
+language plpgsql security definer set search_path = public as $$
+declare signed boolean;
+begin
+  signed := exists(select 1 from day_reports d
+    where d.mission_id = coalesce(new.mission_id, old.mission_id)
+      and d.work_date = coalesce(new.work_date, old.work_date));
+  if signed and not is_staff() then
+    raise exception 'Journée déjà signée par le client : pointage verrouillé';
+  end if;
+  if tg_op = 'DELETE' then return old; end if;
+  new.updated_at := now();
+  -- Pointage saisi ou corrigé par quelqu'un d'autre que le travailleur
+  if auth.uid() is not null and auth.uid() <> new.user_id then
+    new.edited_by := auth.uid();
+    new.edited_at := now();
+    if signed and coalesce(trim(new.edit_reason), '') = '' then
+      raise exception 'Motif obligatoire pour corriger une journée signée';
+    end if;
+  end if;
+  return new;
+end $$;
