@@ -604,3 +604,62 @@ begin
   end if;
   return new;
 end $$;
+
+-- =====================================================================
+-- Migration 006 : sauvegardes CSV (manuelle et hebdomadaire automatique)
+-- Remplacer CLE_ANON_LEGACY par la clé "anon" (Settings > API Keys > Legacy) avant exécution.
+-- =====================================================================
+
+-- Espace de stockage privé des archives (lecture réservée à l'administrateur)
+insert into storage.buckets (id, name, public) values ('backups', 'backups', false) on conflict do nothing;
+drop policy if exists bk_read on storage.objects;
+create policy bk_read on storage.objects for select to authenticated
+  using (bucket_id = 'backups' and is_admin());
+
+-- Export lisible des prestations (noms en clair)
+create or replace view public.export_prestations with (security_invoker = true) as
+select t.work_date as date, p.full_name as collaborateur, m.id as chantier_id, m.title as chantier, c.name as client,
+  to_char(t.workshop_arrival at time zone 'Europe/Brussels', 'HH24:MI') as arrivee_atelier,
+  to_char(t.site_arrival at time zone 'Europe/Brussels', 'HH24:MI') as arrivee_chantier,
+  to_char(t.site_end at time zone 'Europe/Brussels', 'HH24:MI') as fin_chantier,
+  round((extract(epoch from (t.site_arrival - t.workshop_arrival)) / 3600)::numeric, 2) as trajet_h,
+  round((extract(epoch from (t.site_end - t.site_arrival)) / 3600)::numeric, 2) as chantier_h,
+  round((extract(epoch from (t.site_end - t.workshop_arrival)) / 3600)::numeric, 2) as total_h,
+  t.note, t.technical_note as remarque_technique, t.exclusion_note as exclusion,
+  e.full_name as corrige_par, t.edit_reason as motif_correction
+from public.time_entries t
+join public.profiles p on p.id = t.user_id
+join public.missions m on m.id = t.mission_id
+left join public.clients c on c.id = m.client_id
+left join public.profiles e on e.id = t.edited_by
+order by t.work_date, p.full_name;
+
+-- Secret partagé entre la tâche planifiée et la fonction (stocké chiffré dans Vault)
+do $$ begin
+  if not exists (select 1 from vault.secrets where name = 'mm_backup_secret') then
+    perform vault.create_secret(replace(gen_random_uuid()::text, '-', '') || replace(gen_random_uuid()::text, '-', ''), 'mm_backup_secret', 'Sauvegarde hebdomadaire MM');
+  end if;
+end $$;
+
+create or replace function public.check_backup_secret(s text) returns boolean
+language sql stable security definer set search_path = public, vault as $$
+  select exists(select 1 from vault.decrypted_secrets where name = 'mm_backup_secret' and decrypted_secret = s)
+$$;
+revoke all on function public.check_backup_secret(text) from public, anon, authenticated;
+grant execute on function public.check_backup_secret(text) to service_role;
+
+-- Tâche planifiée : chaque lundi à 02:00 UTC (03:00 ou 04:00 heure belge)
+create extension if not exists pg_cron;
+create extension if not exists pg_net with schema extensions;
+
+do $$ begin perform cron.unschedule('mm-sauvegarde-hebdo'); exception when others then null; end $$;
+select cron.schedule('mm-sauvegarde-hebdo', '0 2 * * 1', $job$
+  select net.http_post(
+    url := 'https://hewmclzsohtrneywqwvw.supabase.co/functions/v1/backup',
+    headers := jsonb_build_object(
+      'Content-Type', 'application/json',
+      'Authorization', 'Bearer CLE_ANON_LEGACY',
+      'x-backup-secret', (select decrypted_secret from vault.decrypted_secrets where name = 'mm_backup_secret')),
+    body := '{"source":"cron"}'::jsonb,
+    timeout_milliseconds := 120000)
+$job$);
