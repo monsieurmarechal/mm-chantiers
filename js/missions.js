@@ -282,6 +282,7 @@ export async function renderDetail(id) {
         <div id="pointage"></div>
         <div id="photos"></div>
         <div id="team"></div>
+        <div id="report" class="actions"></div>
         <h3>Rapports signés</h3>
         ${reports.length ? `<ul class="files">${reports.map((r) => `<li>${fmtDate(r.work_date)} · ${esc(r.client_name)} · ${fmtDateTime(r.signed_at)}
           ${r.emailed ? `<span class="badge st-terminee">Envoyé</span>` : `<span class="badge st-annulee">Non envoyé</span>`}</li>`).join("")}</ul>` : `<p class="muted">Aucun rapport signé.</p>`}
@@ -376,6 +377,15 @@ export async function renderDetail(id) {
         entry: entries.find((x) => x.user_id === b.dataset.fix), missionId: id, userId: b.dataset.fix, workDate, onDone: drawPointage,
       })));
     } else tz.innerHTML = isMember && m.team_leader_id ? `<p class="muted small">La signature client est recueillie par ${esc(nameOf(m.team_leader_id))} (chef d'équipe).</p>` : "";
+
+    // Rapport d'intervention : envoi (équipe, admin, RH) et impression (admin, RH)
+    const rz = v.querySelector("#report");
+    rz.innerHTML = `${isMember || staff ? `<button class="btn ghost" id="sendrep">📧 Envoyer le rapport d'intervention</button>` : ""}
+      ${staff ? `<button class="btn ghost" id="printrep">🖨 Imprimer le rapport de chantier</button>` : ""}`;
+    const sr = rz.querySelector("#sendrep");
+    if (sr) sr.onclick = () => sendReportModal(m, memberIds, workDate, signed, entries, () => renderDetail(id));
+    const pr = rz.querySelector("#printrep");
+    if (pr) pr.onclick = () => printReportModal(m, memberIds, workDate);
   }
   await drawPointage();
 }
@@ -566,6 +576,150 @@ function shareOrder(m, memberIds, mtools) {
       <a class="btn ghost" href="https://wa.me/?text=${encodeURIComponent(txt)}" target="_blank" rel="noopener">WhatsApp</a>
       <button class="btn" id="cp">Copier</button></div>`);
   md.el.querySelector("#cp").onclick = () => navigator.clipboard.writeText(txt).then(() => toast("Copié"));
+}
+
+// =====================================================================
+// RAPPORT D'INTERVENTION : ENVOI PAR E-MAIL
+// =====================================================================
+function reportText(m, workDate, signed, entries) {
+  const total = entries.reduce((s, e) => s + hoursBetween(e.site_arrival, e.site_end), 0);
+  return [
+    `RAPPORT D'INTERVENTION - Monsieur Maréchal`,
+    `Chantier #${m.id} : ${m.title}`,
+    `Client : ${m.clients?.name || "-"}`,
+    `Adresse : ${m.address}`,
+    `Date : ${fmtDate(workDate)}`, "",
+    ...entries.map((e) => `${nameOf(e.user_id)} : atelier ${fmtTime(e.workshop_arrival)}, chantier ${fmtTime(e.site_arrival)} → ${fmtTime(e.site_end)} (${fmtH(hoursBetween(e.site_arrival, e.site_end))})`
+      + (e.technical_note ? `\n  Remarque technique : ${e.technical_note}` : "") + (e.exclusion_note ? `\n  Exclusion : ${e.exclusion_note}` : "")),
+    "", `Total heures sur chantier : ${fmtH(total)}`,
+    signed ? `Signé par le client : ${signed.client_name}, le ${fmtDateTime(signed.signed_at)}` : `Non signé par le client`,
+  ].join("\n");
+}
+
+function sendReportModal(m, memberIds, workDate, signed, entries, onDone) {
+  const clientMail = m.clients?.email || "";
+  const md = modal("Envoyer le rapport d'intervention", `
+    <p><b>${esc(m.title)}</b> · ${fmtDate(workDate)}</p>
+    ${signed
+      ? `<div class="info ok">Journée signée par ${esc(signed.client_name)} le ${fmtDateTime(signed.signed_at)}.</div>`
+      : `<div class="info warn">Journée pas encore signée par le client : le rapport part avec la mention « non signé ».</div>`}
+    ${entries.some((e) => !e.site_end) ? `<div class="info warn">Certains collaborateurs n'ont pas encore pointé la fin de chantier.</div>` : ""}
+    <form class="form" id="srf">
+      <p class="small muted">Le rapport (pointages, remarques, photos${signed ? ", signature" : ""}) est envoyé à l'adresse des rapports définie par l'administrateur.</p>
+      ${clientMail ? `<label class="check"><input type="checkbox" name="cc"> Envoyer aussi une copie au client (${esc(clientMail)})</label>` : ""}
+      <div id="srerr"></div>
+      <div class="actions"><button type="button" class="btn ghost" data-close>Annuler</button><button class="btn" id="srgo">Envoyer</button></div>
+    </form>`);
+  const f = md.el.querySelector("#srf");
+  f.onsubmit = (e) => {
+    e.preventDefault();
+    busy(f.querySelector("#srgo"), async () => {
+      try {
+        const r = await callFn("send-report", signed
+          ? { report_id: signed.id, cc_client: !!f.cc?.checked }
+          : { mission_id: m.id, work_date: workDate, cc_client: !!f.cc?.checked });
+        md.close();
+        toast(`Rapport envoyé à ${(r.to || []).join(", ")}`);
+        if (signed && !signed.emailed) onDone?.();
+      } catch (er) {
+        // Repli : partage du rapport en texte (WhatsApp, e-mail du téléphone…)
+        const txt = reportText(m, workDate, signed, entries);
+        f.querySelector("#srerr").innerHTML = `<div class="info err">E-mail non envoyé : ${esc(er.message)}</div>
+          <p class="small">Vous pouvez transmettre le rapport autrement :</p>
+          <div class="actions">
+            ${navigator.share ? `<button type="button" class="btn ghost" id="srshare">Partager</button>` : ""}
+            <a class="btn ghost" href="mailto:?subject=${encodeURIComponent(`Rapport d'intervention #${m.id} - ${m.title} - ${workDate}`)}&body=${encodeURIComponent(txt)}">E-mail</a>
+            <a class="btn ghost" href="https://wa.me/?text=${encodeURIComponent(txt)}" target="_blank" rel="noopener">WhatsApp</a>
+            <button type="button" class="btn ghost" id="srcp">Copier</button></div>`;
+        f.querySelector("#srcp").onclick = () => navigator.clipboard.writeText(txt).then(() => toast("Copié"));
+        const sh = f.querySelector("#srshare");
+        if (sh) sh.onclick = () => navigator.share({ title: `Rapport d'intervention #${m.id}`, text: txt }).catch(() => {});
+      }
+    });
+  };
+}
+
+// =====================================================================
+// RAPPORT DE CHANTIER : IMPRESSION (admin / RH)
+// =====================================================================
+function printReportModal(m, memberIds, workDate) {
+  const md = modal("Imprimer le rapport de chantier", `
+    <form class="form" id="prf">
+      <label class="check"><input type="radio" name="scope" value="day" checked> Journée du ${fmtDate(workDate)}</label>
+      <label class="check"><input type="radio" name="scope" value="all"> Chantier complet (toutes les journées pointées)</label>
+      <label class="check"><input type="checkbox" name="photos" checked> Inclure les photos de réalisation</label>
+      <div class="actions"><button type="button" class="btn ghost" data-close>Annuler</button><button class="btn" id="prgo">🖨 Imprimer</button></div>
+    </form>`);
+  const f = md.el.querySelector("#prf");
+  f.onsubmit = (e) => {
+    e.preventDefault();
+    busy(f.querySelector("#prgo"), async () => {
+      const html = await siteReportHtml(m, memberIds, f.scope.value === "day" ? workDate : null, f.photos.checked);
+      md.close();
+      printDoc(`Rapport de chantier n° ${m.id}`, html,
+        { subtitle: `${m.title}${f.scope.value === "day" ? ` · ${fmtDate(workDate)}` : ""}` });
+    });
+  };
+}
+
+async function signedUrlMap(bucket, paths) {
+  if (!paths.length) return {};
+  const { data } = await sb.storage.from(bucket).createSignedUrls(paths, 3600);
+  return Object.fromEntries((data || []).map((d, i) => [paths[i], d.signedUrl]));
+}
+
+async function siteReportHtml(m, memberIds, day, withPhotos) {
+  if (!state.profiles.length) await loadProfiles();
+  const only = (qb) => (day ? qb.eq("work_date", day) : qb);
+  const [entries, reports, photos] = await Promise.all([
+    q(only(sb.from("time_entries").select("*").eq("mission_id", m.id)).order("work_date").order("site_arrival")),
+    q(only(sb.from("day_reports").select("*").eq("mission_id", m.id)).order("work_date")),
+    withPhotos ? q(only(sb.from("mission_photos").select("*").eq("mission_id", m.id)).order("work_date").order("created_at")) : [],
+  ]);
+  const [sigUrl, phUrl] = await Promise.all([
+    signedUrlMap("signatures", reports.map((r) => r.signature_path)),
+    signedUrlMap("mission-photos", photos.map((p) => p.path)),
+  ]);
+  const days = [...new Set([...entries, ...reports, ...photos].map((x) => x.work_date))].sort();
+  const hS = (list) => list.reduce((s, e) => s + hoursBetween(e.site_arrival, e.site_end), 0);
+  const hT = (list) => list.reduce((s, e) => s + hoursBetween(e.workshop_arrival, e.site_end), 0);
+  const row = (k, val) => `<tr><th>${k}</th><td>${val}</td></tr>`;
+
+  let html = `<table class="pr-kv">
+    ${row("Client", `${esc(m.clients?.name || "-")}${m.clients?.phone ? ` · ${esc(m.clients.phone)}` : ""}`)}
+    ${row("Adresse du chantier", esc(m.address))}
+    ${row("Période prévue", `${fmtDate(m.scheduled_date)}${m.end_date && m.end_date !== m.scheduled_date ? ` au ${fmtDate(m.end_date)}` : ""}`)}
+    ${row("Équipe", memberIds.map((u) => esc(nameOf(u)) + (u === m.team_leader_id ? " <b>(chef d'équipe)</b>" : "")).join(", ") || "-")}
+    ${row("Statut", STATUS[m.status] || m.status)}
+    ${row("Heures sur chantier", `<b>${fmtH(hS(entries))}</b> · journées complètes (atelier → fin) : ${fmtH(hT(entries))}`)}
+  </table>
+  <h3>Description du travail</h3><p class="pre">${esc(m.description || "-")}</p>`;
+
+  if (!day && days.length > 1) {
+    html += `<h3>Synthèse par journée</h3><table class="table"><thead><tr><th>Date</th><th>Collaborateurs</th><th>H. chantier</th><th>Signature client</th></tr></thead><tbody>
+      ${days.map((d) => { const es = entries.filter((e) => e.work_date === d); const r = reports.find((x) => x.work_date === d);
+        return `<tr><td>${fmtDate(d)}</td><td>${es.length}</td><td>${fmtH(hS(es))}</td><td>${r ? esc(r.client_name) : "Non signée"}</td></tr>`; }).join("")}
+      </tbody><tfoot><tr><th colspan="2">Total</th><th>${fmtH(hS(entries))}</th><th></th></tr></tfoot></table>`;
+  }
+
+  if (!days.length) html += `<p>Aucun pointage enregistré${day ? " pour cette journée" : ""}.</p>`;
+  for (const d of days) {
+    const es = entries.filter((e) => e.work_date === d);
+    const r = reports.find((x) => x.work_date === d);
+    const ph = photos.filter((p) => p.work_date === d);
+    html += `<section class="pr-day"><h3>Journée du ${fmtDate(d)}</h3>
+      ${es.length ? `<table class="table"><thead><tr><th>Collaborateur</th><th>Atelier</th><th>Chantier</th><th>Fin</th><th>H. chantier</th><th>H. totales</th></tr></thead><tbody>
+        ${es.map((e) => `<tr><td>${esc(nameOf(e.user_id))}${e.edited_by ? " <small>(corrigé)</small>" : ""}</td><td>${fmtTime(e.workshop_arrival)}</td><td>${fmtTime(e.site_arrival)}</td>
+          <td>${fmtTime(e.site_end)}</td><td>${fmtH(hoursBetween(e.site_arrival, e.site_end))}</td><td>${fmtH(hoursBetween(e.workshop_arrival, e.site_end))}</td></tr>
+          ${e.note || e.technical_note || e.exclusion_note ? `<tr><td colspan="6" class="pr-notes">${e.note ? `<b>Note :</b> ${esc(e.note)}<br>` : ""}${e.technical_note ? `<b>Remarque technique :</b> ${esc(e.technical_note)}<br>` : ""}${e.exclusion_note ? `<b>Exclusion :</b> ${esc(e.exclusion_note)}` : ""}</td></tr>` : ""}`).join("")}
+        </tbody><tfoot><tr><th colspan="4">Total de la journée</th><th>${fmtH(hS(es))}</th><th>${fmtH(hT(es))}</th></tr></tfoot></table>` : `<p>Aucun pointage.</p>`}
+      ${ph.length ? `<div class="pr-photos">${ph.map((p) => `<figure><img src="${phUrl[p.path] || ""}" alt=""><figcaption>${esc(p.caption || "")} <small>${esc(nameOf(p.user_id))} · ${fmtTime(p.created_at)}</small></figcaption></figure>`).join("")}</div>` : ""}
+      ${r ? `<div class="pr-sign"><div>Accord client : <b>${esc(r.client_name)}</b><br>Signé le ${fmtDateTime(r.signed_at)}<br>Chef d'équipe : ${esc(nameOf(r.leader_id))}</div>
+          <div>${sigUrl[r.signature_path] ? `<img class="pr-sigimg" src="${sigUrl[r.signature_path]}" alt="Signature client">` : "Signature indisponible"}</div></div>`
+        : `<div class="pr-sign"><div>Journée non signée par le client.<br>Nom du client :</div><div>Signature pour accord :</div></div>`}
+    </section>`;
+  }
+  return html;
 }
 
 // =====================================================================
