@@ -42,15 +42,14 @@ export async function renderLeaves() {
   const year = new Date().getFullYear();
   await Promise.all([loadProfiles(), loadLeaveTypes()]);
   const types = state.leaveTypes.filter((t) => t.active);
-  const ctr = await loadCounters(year, staff ? null : uid);
-  const reqs = await q(sb.from("leave_requests").select("*").order("created_at", { ascending: false }).limit(300));
-  const mine = reqs.filter((r) => r.user_id === uid);
-  const pending = reqs.filter((r) => r.status === "en_attente" && r.user_id !== uid);
+  const ctr = await loadCounters(year, uid);
+  const mine = await q(sb.from("leave_requests").select("*").eq("user_id", uid).order("created_at", { ascending: false }).limit(100));
+  const pendingCount = staff ? (await q(sb.from("leave_requests").select("id").eq("status", "en_attente").neq("user_id", uid))).length : 0;
   const counted = state.leaveTypes.filter((t) => t.has_counter);
 
   v.innerHTML = `
     <div class="page-h"><h2>Congés et heures supplémentaires</h2>
-      ${staff ? `<a class="btn ghost" href="#/compteurs">Compteurs de l'équipe</a>` : ""}</div>
+      ${staff ? `<a class="btn ghost" href="#/compteurs">Demandes de l'équipe${pendingCount ? ` <span class="badge leader">${pendingCount}</span>` : ""}</a>` : ""}</div>
     <div class="grid2">
       <section class="panel">
         <h3>Mes compteurs ${year}</h3>
@@ -64,29 +63,37 @@ export async function renderLeaves() {
           <label>Type<select name="type" id="ltype">${types.map((t) => `<option value="${t.code}">${esc(t.label)}</option>`).join("")}</select></label>
           <div class="grid2"><label>Du<input type="date" name="start_date" required value="${todayStr()}"></label>
           <label>Au<input type="date" name="end_date" required value="${todayStr()}"></label></div>
-          <label><span id="amtl">Nombre de jours</span><input type="number" name="amount" step="0.5" min="0.25" required></label>
+          <label><span id="amtl">Nombre de jours</span><input type="number" name="amount" step="1" min="1" required></label>
           <label>Motif / commentaire<textarea name="reason" rows="2"></textarea></label>
           <button class="btn" id="lsend">Envoyer la demande</button>
         </form>
+      </section>
+      <section class="panel">
         <h3>Mes demandes</h3>
         ${leaveTable(mine, { own: true })}
       </section>
-      ${staff ? `<section class="panel">
-        <h3>Demandes à traiter <span class="badge">${pending.length}</span></h3>
-        ${pending.length ? leaveTable(pending, { manage: true }) : `<p class="muted">Aucune demande en attente.</p>`}
-        <h3>Historique des demandes</h3>
-        ${leaveTable(reqs.filter((r) => r.status !== "en_attente").slice(0, 60), { showUser: true, edit: true })}
-      </section>` : ""}
     </div>`;
 
   // Quantité proposée automatiquement : jours ouvrables ou heures
   const lf = v.querySelector("#lf");
+  // Règles de saisie de la quantité :
+  // - heures : par quart d'heure (0,25)
+  // - jours, demande sur 1 seul jour : nombre entier uniquement (1)
+  // - jours, demande sur plusieurs jours : demi-journées admises, plafonnées aux jours ouvrables de la période
   const syncAmount = () => {
     const t = leaveType(lf.type.value);
-    v.querySelector("#amtl").textContent = t.unit === "heures" ? "Nombre d'heures" : "Nombre de jours (ouvrables, 0,5 = demi-journée)";
-    lf.amount.step = t.unit === "heures" ? "0.25" : "0.5";
-    if (t.unit === "jours") lf.amount.value = businessDays(lf.start_date.value, lf.end_date.value) || "";
-    else if (lf.dataset.unit !== "heures") lf.amount.value = "";
+    const bd = businessDays(lf.start_date.value, lf.end_date.value);
+    const oneDay = lf.start_date.value === lf.end_date.value;
+    if (t.unit === "heures") {
+      v.querySelector("#amtl").textContent = "Nombre d'heures";
+      Object.assign(lf.amount, { step: "0.25", min: "0.25" });
+      lf.amount.removeAttribute("max");
+      if (lf.dataset.unit !== "heures") lf.amount.value = "";
+    } else {
+      v.querySelector("#amtl").textContent = oneDay ? "Nombre de jours (1 jour = nombre entier)" : `Nombre de jours ouvrables (max. ${bd}, 0,5 = demi-journée)`;
+      Object.assign(lf.amount, { step: oneDay ? "1" : "0.5", min: oneDay ? "1" : "0.5", max: String(Math.max(bd, 1)) });
+      lf.amount.value = bd || 1;
+    }
     lf.dataset.unit = t.unit;
   };
   lf.type.onchange = syncAmount;
@@ -99,6 +106,16 @@ export async function renderLeaves() {
     busy(lf.querySelector("#lsend"), async () => {
       const d = formData(lf);
       const t = leaveType(d.type);
+      const qty = +d.amount;
+      if (d.end_date < d.start_date) throw new Error("La date de fin précède la date de début");
+      if (t.unit === "jours") {
+        const bd = businessDays(d.start_date, d.end_date);
+        if (bd === 0) throw new Error("La période ne contient aucun jour ouvrable (lundi à vendredi)");
+        if (d.start_date === d.end_date && !Number.isInteger(qty)) throw new Error("Pour une demande sur 1 jour, indiquez un nombre entier");
+        if (qty > bd) throw new Error(`La période ne compte que ${bd} jour(s) ouvrable(s)`);
+        if (Math.round(qty * 2) !== qty * 2) throw new Error("Saisissez des jours entiers ou des demi-journées (0,5)");
+      }
+      if (!(qty > 0)) throw new Error("Quantité invalide");
       if (t.deducts_overtime && +d.amount > ctr.overtime(uid)) {
         if (!(await confirmBox(`Votre solde d'heures sup. (${fmtH(ctr.overtime(uid))}) est inférieur à la demande. Envoyer quand même ?`))) return;
       }
@@ -204,6 +221,8 @@ export async function renderCounters() {
   const year = +(sessionStorage.getItem("mm_cyear") || new Date().getFullYear());
   const ctr = await loadCounters(year);
   const users = state.profiles.filter((p) => p.active);
+  const reqs = await q(sb.from("leave_requests").select("*").order("created_at", { ascending: false }).limit(300));
+  const pending = reqs.filter((r) => r.status === "en_attente");
   const counted = state.leaveTypes.filter((t) => t.has_counter && t.active);
 
   const tableHtml = (forPrint) => `<div class="table-wrap"><table class="table"><thead><tr><th>Collaborateur</th><th>Heures sup.</th>
@@ -221,7 +240,15 @@ export async function renderCounters() {
       <button class="btn ghost" id="newtype">+ Type de congé</button><button class="btn ghost" id="bulk">Allocation pour tous</button><button class="btn ghost" id="pr">🖨 Imprimer</button></div></div>
     ${counted.length ? "" : `<div class="info warn">Aucun type de congé avec compteur actif. <a href="#/types-conges">Paramétrer les types</a></div>`}
     ${tableHtml(false)}
-    <p class="muted small">Solde = alloué − pris (demandes approuvées, année de début). Les demandes en attente sont indiquées à part. Heures sup. : solde cumulé toutes années.</p>`;
+    <p class="muted small">Solde = alloué − pris (demandes approuvées, année de début). Les demandes en attente sont indiquées à part. Heures sup. : solde cumulé toutes années.</p>
+    <section class="panel" id="pending">
+      <h3>Demandes à traiter <span class="badge ${pending.length ? "leader" : ""}">${pending.length}</span></h3>
+      ${pending.length ? leaveTable(pending, { manage: true }) : `<p class="muted">Aucune demande en attente.</p>`}
+    </section>
+    <section class="panel">
+      <h3>Historique des demandes</h3>
+      ${leaveTable(reqs.filter((r) => r.status !== "en_attente").slice(0, 80), { showUser: true, edit: true })}
+    </section>`;
 
   v.querySelector("#yr").onchange = (e) => { sessionStorage.setItem("mm_cyear", e.target.value); renderCounters(); };
   v.querySelector("#pr").onclick = () => printDoc(`Compteurs de congés ${year}`, tableHtml(true), { landscape: counted.length > 3, subtitle: `${users.length} collaborateurs actifs` });
@@ -233,6 +260,7 @@ export async function renderCounters() {
   }));
   v.querySelector("#bulk").onclick = () => bulkAllocation(year, counted, users, renderCounters);
   v.querySelector("#newtype").onclick = () => leaveTypeForm(null, renderCounters);
+  bindLeaveActions(v, renderCounters);
 }
 
 function editAllocation(uid, code, year, a, refresh) {
@@ -577,6 +605,86 @@ export async function renderRecap() {
   v.querySelector("#prt").onclick = () => printDoc("Récapitulatif des prestations", v.querySelector("#out").innerHTML, {
     landscape: true, subtitle: `${v.querySelector("#plabel").textContent}${who ? " · " + nameOf(who) : ""}`,
   });
+  await load();
+}
+
+// =====================================================================
+// CALENDRIER : chantiers et congés (admin / RH)
+// =====================================================================
+export async function renderCalendar() {
+  if (!isStaff()) return (location.hash = "#/missions");
+  const v = view();
+  await Promise.all([loadProfiles(), loadLeaveTypes()]);
+  const saved = JSON.parse(sessionStorage.getItem("mm_cal") || "{}");
+  let ref = saved.ref || todayStr();
+  let who = saved.who || "";
+  let show = saved.show || "tout";
+
+  v.innerHTML = `
+    <div class="page-h"><h2>Calendrier</h2><button type="button" class="btn ghost" id="prt">🖨 Imprimer</button></div>
+    <div class="filters">
+      <div class="row nav-period"><button type="button" class="btn ghost small" id="prev">◀</button>
+        <input type="month" id="ref" value="${ref.slice(0, 7)}"><button type="button" class="btn ghost small" id="next">▶</button>
+        <button type="button" class="btn ghost small" id="today">Aujourd'hui</button></div>
+      <div class="seg" id="show">${[["tout", "Tout"], ["chantiers", "Chantiers"], ["conges", "Congés"]].map(([k, l]) => `<button type="button" data-s="${k}" class="${k === show ? "on" : ""}">${l}</button>`).join("")}</div>
+      <label>Collaborateur<select id="who"><option value="">Tous</option>${state.profiles.filter((p) => p.active).map((p) => `<option value="${p.id}" ${p.id === who ? "selected" : ""}>${esc(p.full_name)}</option>`).join("")}</select></label>
+    </div>
+    <h3 id="ctitle"></h3>
+    <div id="cal"><p class="muted">Chargement…</p></div>
+    <div class="cal-legend"><span class="ev ev-m">Chantier</span>${state.leaveTypes.filter((t) => t.active).map((t) => `<span class="ev ev-l" style="--c:${esc(t.color)}">${esc(t.label)}</span>`).join("")}
+      <span class="ev ev-l pending" style="--c:#999">En attente d'approbation</span></div>`;
+
+  const load = async () => {
+    sessionStorage.setItem("mm_cal", JSON.stringify({ ref, who, show }));
+    v.querySelector("#ref").value = ref.slice(0, 7);
+    v.querySelectorAll("#show button").forEach((b) => b.classList.toggle("on", b.dataset.s === show));
+    const d0 = new Date(ref.slice(0, 7) + "-01T12:00:00");
+    const first = new Date(d0), last = new Date(d0.getFullYear(), d0.getMonth() + 1, 0, 12);
+    const gStart = new Date(first); gStart.setDate(first.getDate() - ((first.getDay() + 6) % 7));
+    const gEnd = new Date(last); gEnd.setDate(last.getDate() + (6 - ((last.getDay() + 6) % 7)));
+    const from = todayStr(gStart), to = todayStr(gEnd);
+    v.querySelector("#ctitle").textContent = first.toLocaleDateString("fr-BE", { month: "long", year: "numeric" }).replace(/^./, (c) => c.toUpperCase());
+
+    const [missions, leaves] = await Promise.all([
+      show === "conges" ? [] : q(sb.from("missions").select("id, title, scheduled_date, end_date, start_time, status, team_leader_id, clients(name), mission_members(user_id)")
+        .lte("scheduled_date", to).or(`end_date.gte.${from},and(end_date.is.null,scheduled_date.gte.${from})`).neq("status", "annulee").order("start_time")),
+      show === "chantiers" ? [] : q(sb.from("leave_requests").select("*").lte("start_date", to).gte("end_date", from).neq("status", "refusee")),
+    ]);
+    const ms = missions.filter((m) => !who || m.mission_members.some((x) => x.user_id === who));
+    const ls = leaves.filter((l) => !who || l.user_id === who);
+
+    const days = [];
+    for (let d = new Date(gStart); d <= gEnd; d.setDate(d.getDate() + 1)) days.push(todayStr(d));
+    const today = todayStr();
+    const cell = (ds) => {
+      const dt = new Date(ds + "T12:00:00");
+      const inMonth = dt.getMonth() === d0.getMonth(), we = dt.getDay() === 0 || dt.getDay() === 6;
+      const dm = ms.filter((m) => m.scheduled_date <= ds && ds <= (m.end_date || m.scheduled_date));
+      const dl = ls.filter((l) => l.start_date <= ds && ds <= l.end_date && !we);
+      return `<div class="cal-day ${inMonth ? "" : "out"} ${we ? "we" : ""} ${ds === today ? "today" : ""} ${dm.length || dl.length ? "has" : ""}">
+        <div class="cal-num"><span class="cal-wd">${dt.toLocaleDateString("fr-BE", { weekday: "short" })}</span> ${dt.getDate()}</div>
+        ${dm.map((m) => `<a class="ev ev-m st-${m.status}" href="#/mission/${m.id}" title="${esc(m.title)} · ${esc(m.clients?.name || "")} · ${esc(m.mission_members.map((x) => nameOf(x.user_id)).join(", "))}">
+          ${m.start_time && ds === m.scheduled_date ? `<b>${m.start_time.slice(0, 5)}</b> ` : ""}${esc(m.title)}<small>${esc(m.mission_members.map((x) => nameOf(x.user_id).split(" ")[0]).join(", "))}</small></a>`).join("")}
+        ${dl.map((l) => { const t = leaveType(l.type); return `<span class="ev ev-l ${l.status === "en_attente" ? "pending" : ""}" style="--c:${esc(t.color)}" title="${esc(t.label)}${l.status === "en_attente" ? " (en attente)" : ""}">
+          ${esc(nameOf(l.user_id))}<small>${esc(t.label)}${l.status === "en_attente" ? " · en attente" : ""}</small></span>`; }).join("")}
+      </div>`;
+    };
+    v.querySelector("#cal").innerHTML = `<div class="cal-grid">
+      ${["Lun", "Mar", "Mer", "Jeu", "Ven", "Sam", "Dim"].map((d) => `<div class="cal-head">${d}</div>`).join("")}
+      ${days.map(cell).join("")}</div>`;
+  };
+
+  const reload = () => load().catch((er) => toast(er.message, "err"));
+  const shift = (n) => { const d = new Date(ref.slice(0, 7) + "-01T12:00:00"); d.setMonth(d.getMonth() + n); ref = todayStr(d); reload(); };
+  v.querySelector("#prev").onclick = () => shift(-1);
+  v.querySelector("#next").onclick = () => shift(1);
+  v.querySelector("#today").onclick = () => { ref = todayStr(); reload(); };
+  v.querySelector("#ref").onchange = (e) => { if (e.target.value) { ref = e.target.value + "-01"; reload(); } };
+  v.querySelector("#who").onchange = (e) => { who = e.target.value; reload(); };
+  v.querySelectorAll("#show button").forEach((b) => (b.onclick = () => { show = b.dataset.s; reload(); }));
+  v.querySelector("#prt").onclick = () => printDoc(`Calendrier · ${v.querySelector("#ctitle").textContent}`,
+    v.querySelector("#cal").innerHTML + v.querySelector(".cal-legend").outerHTML,
+    { landscape: true, subtitle: `${who ? nameOf(who) : "Toute l'équipe"} · ${{ tout: "chantiers et congés", chantiers: "chantiers", conges: "congés" }[show]}` });
   await load();
 }
 
