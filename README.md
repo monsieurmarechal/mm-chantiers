@@ -16,7 +16,8 @@ Application web installable sur Android (PWA) : ordres de mission, pointages, si
 | Liste des outils du magasin central (création, suppression) | Oui | Oui | Non |
 | Adresse de l'atelier, e-mail de réception des rapports | Oui | Non | Non |
 | Pointage : arrivée atelier, arrivée chantier, fin chantier + note, remarque technique, note d'exclusion | Si affecté | Si affecté | Oui |
-| Signature client en fin de journée + rapport e-mail | Oui | Oui | **Chef d'équipe uniquement** |
+| Photos de réalisation (appareil photo ou galerie, légende, compression auto) | Oui | Oui | Si affecté, jusqu'à la signature |
+| Signature client en fin de journée + rapport e-mail (photos jointes) | Oui | Oui | **Chef d'équipe uniquement** |
 | Demande de congé / récupération | Oui | Oui | Oui |
 | Approbation des demandes, mise à jour du compteur d'heures sup. | Oui | Oui | Non |
 | Récapitulatif des prestations par personne / jour / semaine / mois + export CSV | Oui | Oui | Non |
@@ -110,6 +111,8 @@ Ouvrir l'adresse dans **Chrome** > menu ⋮ > **Ajouter à l'écran d'accueil** 
 - **Offre gratuite Supabase** : 500 Mo de base, 1 Go de fichiers, projet mis en pause après 7 jours sans activité (réactivation en un clic dans le tableau de bord). Usage quotidien = pas de pause.
 - **Distances** : itinéraire routier via le serveur public OSRM ; en cas d'indisponibilité, estimation à vol d'oiseau × 1,3 (signalée « estimation »).
 - **Pièces jointes** : 50 Mo maximum par fichier (limite Supabase gratuite).
+- **Photos** : compressées dans le téléphone (1600 px, ~300 Ko). 1 Go de stockage gratuit = environ 3 000 photos. Rapport e-mail : 20 photos / 8 Mo maximum en pièces jointes, les suivantes restent consultables dans l'application.
+- **Migration 002** (photos) : `supabase/migration_002_photos.sql`, déjà appliquée au projet et intégrée à `schema.sql` pour une nouvelle installation.
 
 ## 7. Structure du projet
 ```
