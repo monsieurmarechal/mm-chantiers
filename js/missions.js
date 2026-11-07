@@ -279,6 +279,7 @@ export async function renderDetail(id) {
         <div class="row between"><h3>Pointage</h3>
           <label class="inline">Jour <input type="date" id="wd" value="${workDate}" min="${m.scheduled_date}" max="${last}"></label></div>
         <div id="pointage"></div>
+        <div id="photos"></div>
         <div id="team"></div>
         <h3>Rapports signés</h3>
         ${reports.length ? `<ul class="files">${reports.map((r) => `<li>${fmtDate(r.work_date)} · ${esc(r.client_name)} · ${fmtDateTime(r.signed_at)}
@@ -349,6 +350,11 @@ export async function renderDetail(id) {
       if (!locked) pf.onsubmit = (e) => { e.preventDefault(); save(pf.querySelector("#psave")); };
     } else pz.innerHTML = "";
 
+    // Photos de réalisation de la journée
+    const phz = v.querySelector("#photos");
+    if (isMember || staff) renderPhotos(phz, +id, workDate, !!signed && !staff);
+    else phz.innerHTML = "";
+
     // Vue équipe : chef d'équipe et admin/RH
     const tz = v.querySelector("#team");
     if (isLeader || staff) {
@@ -362,6 +368,85 @@ export async function renderDetail(id) {
     } else tz.innerHTML = isMember && m.team_leader_id ? `<p class="muted small">La signature client est recueillie par ${esc(nameOf(m.team_leader_id))} (chef d'équipe).</p>` : "";
   }
   await drawPointage();
+}
+
+// =====================================================================
+// PHOTOS DE RÉALISATION
+// =====================================================================
+const PHOTO_MAX_PX = 1600;   // côté le plus long après compression
+const PHOTO_QUALITY = 0.8;   // JPEG : ~200 à 400 Ko par photo
+
+// Redimensionne et compresse la photo dans le téléphone avant envoi
+async function compressImage(file) {
+  const bmp = await createImageBitmap(file, { imageOrientation: "from-image" });
+  const scale = Math.min(1, PHOTO_MAX_PX / Math.max(bmp.width, bmp.height));
+  const c = document.createElement("canvas");
+  c.width = Math.round(bmp.width * scale);
+  c.height = Math.round(bmp.height * scale);
+  c.getContext("2d").drawImage(bmp, 0, 0, c.width, c.height);
+  bmp.close?.();
+  return new Promise((res) => c.toBlob(res, "image/jpeg", PHOTO_QUALITY));
+}
+
+async function loadPhotos(missionId, workDate) {
+  const rows = await q(sb.from("mission_photos").select("*").eq("mission_id", missionId).eq("work_date", workDate).order("created_at"));
+  if (!rows.length) return [];
+  const { data: urls } = await sb.storage.from("mission-photos").createSignedUrls(rows.map((p) => p.path), 3600);
+  return rows.map((p, i) => ({ ...p, url: urls?.[i]?.signedUrl }));
+}
+
+function galleryHtml(photos, { canDelete = () => false } = {}) {
+  if (!photos.length) return `<p class="muted small">Aucune photo pour cette journée.</p>`;
+  return `<div class="gallery">${photos.map((p) => `
+    <figure><a href="${p.url}" target="_blank" rel="noopener"><img src="${p.url}" alt="${esc(p.caption || "Photo chantier")}" loading="lazy"></a>
+      <figcaption>${esc(p.caption || "")}<small>${esc(nameOf(p.user_id))} · ${fmtTime(p.created_at)}</small></figcaption>
+      ${canDelete(p) ? `<button type="button" class="icon-btn del" data-delphoto="${p.id}" title="Supprimer">🗑</button>` : ""}
+    </figure>`).join("")}</div>`;
+}
+
+async function renderPhotos(el, missionId, workDate, locked) {
+  const uid = state.session.user.id;
+  const photos = await loadPhotos(missionId, workDate);
+  el.innerHTML = `
+    <h4>Photos de réalisation · ${fmtDate(workDate)} <span class="badge">${photos.length}</span></h4>
+    ${locked ? "" : `<div class="photo-add">
+      <label class="btn ghost small">📷 Prendre une photo<input type="file" accept="image/*" capture="environment" hidden data-ph></label>
+      <label class="btn ghost small">🖼 Galerie<input type="file" accept="image/*" multiple hidden data-ph></label>
+      <input type="text" id="phcap" placeholder="Légende (facultatif) : avant, après, détail…">
+    </div><div id="phprog" class="muted small"></div>`}
+    ${galleryHtml(photos, { canDelete: (p) => isStaff() || (!locked && p.user_id === uid) })}`;
+
+  el.querySelectorAll("[data-ph]").forEach((inp) => (inp.onchange = async () => {
+    const files = [...inp.files];
+    if (!files.length) return;
+    const prog = el.querySelector("#phprog");
+    const caption = el.querySelector("#phcap").value.trim() || null;
+    let ok = 0;
+    for (const [i, f] of files.entries()) {
+      prog.textContent = `Envoi ${i + 1} / ${files.length}…`;
+      try {
+        const blob = await compressImage(f);
+        const path = `${missionId}/${workDate}/${Date.now()}_${Math.random().toString(36).slice(2, 7)}.jpg`;
+        const up = await sb.storage.from("mission-photos").upload(path, blob, { contentType: "image/jpeg" });
+        if (up.error) throw new Error(up.error.message);
+        await q(sb.from("mission_photos").insert({ mission_id: missionId, work_date: workDate, user_id: uid, path, caption }));
+        ok++;
+      } catch (e) { toast(`${f.name} : ${e.message}`, "err"); }
+    }
+    sendPositionOnce();
+    toast(`${ok} photo(s) ajoutée(s)`);
+    renderPhotos(el, missionId, workDate, locked);
+  }));
+
+  el.querySelectorAll("[data-delphoto]").forEach((b) => (b.onclick = async () => {
+    if (!(await confirmBox("Supprimer cette photo ?"))) return;
+    const p = photos.find((x) => String(x.id) === b.dataset.delphoto);
+    busy(b, async () => {
+      await q(sb.from("mission_photos").delete().eq("id", p.id));
+      await sb.storage.from("mission-photos").remove([p.path]);
+      renderPhotos(el, missionId, workDate, locked);
+    });
+  }));
 }
 
 function punchField(name, label, e, locked) {
@@ -418,6 +503,7 @@ export async function renderSign(id, date) {
   const entries = await q(sb.from("time_entries").select("*").eq("mission_id", id).eq("work_date", date));
   if (!state.profiles.length) await loadProfiles();
   const total = entries.reduce((s, e) => s + hoursBetween(e.site_arrival, e.site_end), 0);
+  const photos = await loadPhotos(+id, date);
 
   v.innerHTML = `
     <div class="page-h"><div><a href="#/mission/${id}" class="back">← Retour au chantier</a>
@@ -430,6 +516,9 @@ export async function renderSign(id, date) {
         ${e.technical_note || e.exclusion_note ? `<tr class="sub"><td colspan="4">${e.technical_note ? `Remarque : ${esc(e.technical_note)} ` : ""}${e.exclusion_note ? `· Exclusion : ${esc(e.exclusion_note)}` : ""}</td></tr>` : ""}`).join("")}
       </tbody><tfoot><tr><th colspan="3">Total heures prestées sur chantier</th><th>${fmtH(total)}</th></tr></tfoot></table></div>
       ${entries.some((e) => !e.site_end) ? `<div class="info warn">Attention : certains collaborateurs n'ont pas encore pointé la fin de chantier.</div>` : ""}
+      <h4>Photos de réalisation (${photos.length})</h4>
+      ${galleryHtml(photos)}
+      <p class="small"><a href="#/mission/${id}">Ajouter des photos avant signature</a></p>
       <form id="sf" class="form">
         <label>Nom et prénom du client *<input name="client_name" required autocomplete="off"></label>
         <label>Signature du client *</label>
