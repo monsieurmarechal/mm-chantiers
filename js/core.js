@@ -5,11 +5,10 @@ export const sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   auth: { persistSession: true, autoRefreshToken: true },
 });
 
-export const state = { session: null, profile: null, settings: null, profiles: [] };
+export const state = { session: null, profile: null, settings: null, profiles: [], leaveTypes: [] };
 
 export const ROLES = { admin: "Administrateur", rh: "Ressources humaines", collaborateur: "Collaborateur de chantier" };
 export const STATUS = { planifiee: "Planifiée", en_cours: "En cours", terminee: "Terminée", annulee: "Annulée" };
-export const LEAVE_TYPES = { conge: "Congé", recuperation: "Récupération (heures sup.)", maladie: "Maladie", autre: "Autre absence" };
 export const LEAVE_STATUS = { en_attente: "En attente", approuvee: "Approuvée", refusee: "Refusée" };
 
 export const $ = (s, r = document) => r.querySelector(s);
@@ -119,6 +118,53 @@ export async function loadProfiles() {
 export async function loadSettings() {
   state.settings = await q(sb.from("settings").select("*").eq("id", 1).single());
   return state.settings;
+}
+
+// ---------- Types de congés ----------
+export async function loadLeaveTypes() {
+  state.leaveTypes = await q(sb.from("leave_types").select("*").order("sort").order("label"));
+  return state.leaveTypes;
+}
+export const leaveType = (code) => state.leaveTypes.find((t) => t.code === code) || { code, label: code, unit: "jours", color: "#999" };
+export const fmtQty = (n, unit) => unit === "heures" ? fmtH(+n || 0) : `${(+n || 0).toLocaleString("fr-BE", { maximumFractionDigits: 2 })} j`;
+
+// Jours ouvrables (lundi à vendredi) entre deux dates incluses
+export function businessDays(d1, d2) {
+  if (!d1 || !d2 || d2 < d1) return 0;
+  let n = 0;
+  for (let d = new Date(d1 + "T12:00:00"); d <= new Date(d2 + "T12:00:00"); d.setDate(d.getDate() + 1)) {
+    const w = d.getDay();
+    if (w !== 0 && w !== 6) n++;
+  }
+  return n;
+}
+
+// ---------- Impression ----------
+// Affiche un document mis en page (en-tête Monsieur Maréchal) et lance l'impression / PDF.
+export function printDoc(title, html, { landscape = false, subtitle = "" } = {}) {
+  document.getElementById("print-area")?.remove();
+  const s = state.settings || {};
+  const el = document.createElement("div");
+  el.id = "print-area";
+  el.className = landscape ? "landscape" : "";
+  el.innerHTML = `
+    <header class="pr-head">
+      <div class="pr-brand"><span class="b1">Monsieur</span><span class="b2">MARECHAL</span></div>
+      <div class="pr-meta">${esc(s.company_name || "Monsieur Maréchal")}<br>${esc(s.workshop_address || "")}</div>
+    </header>
+    <h1 class="pr-title">${esc(title)}</h1>
+    ${subtitle ? `<p class="pr-sub">${esc(subtitle)}</p>` : ""}
+    <div class="pr-body">${html}</div>
+    <footer class="pr-foot">Imprimé le ${new Date().toLocaleString("fr-BE", { dateStyle: "short", timeStyle: "short" })} par ${esc(state.profile?.full_name || "")}</footer>`;
+  document.body.appendChild(el);
+  document.body.classList.add("printing");
+  let style = document.getElementById("print-page-style");
+  if (!style) { style = document.createElement("style"); style.id = "print-page-style"; document.head.appendChild(style); }
+  style.textContent = `@page { size: A4 ${landscape ? "landscape" : "portrait"}; margin: 12mm; }`;
+  const done = () => { document.body.classList.remove("printing"); el.remove(); window.removeEventListener("afterprint", done); };
+  window.addEventListener("afterprint", done);
+  // Laisse le temps aux images (photos, logos) de se charger
+  setTimeout(() => window.print(), 300);
 }
 
 export function downloadCsv(filename, rows) {
