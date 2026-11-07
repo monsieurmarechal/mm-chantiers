@@ -1,5 +1,5 @@
 import { sb, state, q, esc, $, view, toast, busy, isStaff, isAdmin, ROLES, todayStr, loadProfiles, loadSettings, loadLeaveTypes } from "./core.js";
-import { SUPABASE_ANON_KEY } from "./config.js";
+import { SUPABASE_ANON_KEY, APP_VERSION } from "./config.js";
 import * as M from "./missions.js";
 import * as H from "./hr.js";
 import * as A from "./admin.js";
@@ -139,3 +139,40 @@ sb.auth.onAuthStateChange((event, session) => {
 
 // Service worker (installation Android / hors ligne de l'interface)
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("./sw.js").catch(() => {});
+
+// ---------- Détection des nouvelles versions ----------
+// Une application ouverte garde son code en mémoire : on compare régulièrement la version
+// chargée à celle publiée et on propose un rechargement propre.
+const APP_FILES = ["index.html", "css/app.css", "js/app.js", "js/core.js", "js/config.js", "js/geo.js", "js/missions.js", "js/hr.js", "js/admin.js", "sw.js"];
+
+async function forceUpdate() {
+  try {
+    for (const k of await caches.keys()) await caches.delete(k);
+    const regs = (await navigator.serviceWorker?.getRegistrations?.()) || [];
+    await Promise.all(regs.map((r) => r.update().catch(() => {})));
+    // Rafraîchit le cache HTTP du navigateur pour chaque fichier de l'application
+    await Promise.all(APP_FILES.map((f) => fetch(f, { cache: "reload" }).catch(() => {})));
+  } catch {}
+  location.reload();
+}
+
+function showUpdateBanner(v) {
+  if (document.getElementById("upd")) return;
+  const b = document.createElement("div");
+  b.id = "upd";
+  b.className = "update-banner";
+  b.innerHTML = `<span>Nouvelle version de l'application disponible.</span><button class="btn small">Mettre à jour</button>`;
+  b.querySelector("button").onclick = (e) => { e.target.disabled = true; e.target.textContent = "Mise à jour…"; forceUpdate(); };
+  document.body.appendChild(b);
+}
+
+async function checkUpdate() {
+  try {
+    const t = await (await fetch(`js/config.js?nc=${Date.now()}`, { cache: "no-store" })).text();
+    const v = (t.match(/APP_VERSION\s*=\s*"([^"]+)"/) || [])[1];
+    if (v && v !== APP_VERSION) showUpdateBanner(v);
+  } catch {}
+}
+checkUpdate();
+setInterval(checkUpdate, 5 * 60 * 1000);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) checkUpdate(); });
