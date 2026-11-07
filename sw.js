@@ -1,5 +1,5 @@
 // Service worker : met en cache l'interface (pas les données).
-const CACHE = "mm-chantiers-v1";
+const CACHE = "mm-chantiers-v2";
 const ASSETS = [
   "./", "./index.html", "./css/app.css", "./manifest.webmanifest",
   "./js/app.js", "./js/core.js", "./js/config.js", "./js/geo.js", "./js/missions.js", "./js/hr.js", "./js/admin.js",
@@ -17,7 +17,8 @@ self.addEventListener("fetch", (e) => {
   const url = new URL(e.request.url);
   if (e.request.method !== "GET" || url.origin !== location.origin) return;
   e.respondWith(
-    fetch(e.request).then((r) => {
+    // no-cache : revalidation systématique auprès du serveur (mises à jour immédiates)
+    fetch(e.request, { cache: "no-cache" }).then((r) => {
       const copy = r.clone();
       caches.open(CACHE).then((c) => c.put(e.request, copy));
       return r;
