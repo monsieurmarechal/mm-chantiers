@@ -193,7 +193,7 @@ ul.plain { list-style: none; padding: 0; margin: 0; } ul.plain li { padding: 6px
   #print-area .table th { background: var(--anth) !important; color: #fff; padding: 5px 6px; white-space: normal; }
   #print-area .table td { padding: 5px 6px; border: 1px solid #ccc; }
   #print-area tr { page-break-inside: avoid; }
-  #print-area button, #print-area .btn { display: none !important; }
+  #print-area button, #print-area .btn, #print-area .no-print { display: none !important; }
   #print-area .kpis { display: flex; flex-wrap: wrap; gap: 6px; }
   #print-area .kpi { background: #f1f6e4 !important; color: #111; border: 1px solid #cfdcae; padding: 6px 10px; margin: 0; }
   #print-area .kpi span, #print-area .kpi small { color: #444; } #print-area .kpi b { color: var(--anth); font-size: 13pt; }
