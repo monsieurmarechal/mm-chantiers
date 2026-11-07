@@ -609,7 +609,7 @@ export async function renderRecap() {
 }
 
 // =====================================================================
-// CALENDRIER : chantiers et congés (admin / RH)
+// CALENDRIER : chantiers et congés (admin / RH) · vues jour, semaine, mois · calendrier ou liste
 // =====================================================================
 export async function renderCalendar() {
   if (!isStaff()) return (location.hash = "#/missions");
@@ -619,14 +619,19 @@ export async function renderCalendar() {
   let ref = saved.ref || todayStr();
   let who = saved.who || "";
   let show = saved.show || "tout";
+  let period = saved.period || "mois";
+  let layout = saved.layout || "cal";
+  const seg = (id, items, cur, attr) => `<div class="seg" id="${id}">${items.map(([k, l]) => `<button type="button" data-${attr}="${k}" class="${k === cur ? "on" : ""}">${l}</button>`).join("")}</div>`;
 
   v.innerHTML = `
     <div class="page-h"><h2>Calendrier</h2><button type="button" class="btn ghost" id="prt">🖨 Imprimer</button></div>
     <div class="filters">
+      ${seg("period", [["jour", "Jour"], ["semaine", "Semaine"], ["mois", "Mois"]], period, "p")}
+      ${seg("layout", [["cal", "Calendrier"], ["liste", "Liste"]], layout, "l")}
       <div class="row nav-period"><button type="button" class="btn ghost small" id="prev">◀</button>
-        <input type="month" id="ref" value="${ref.slice(0, 7)}"><button type="button" class="btn ghost small" id="next">▶</button>
+        <input type="date" id="ref" value="${ref}"><button type="button" class="btn ghost small" id="next">▶</button>
         <button type="button" class="btn ghost small" id="today">Aujourd'hui</button></div>
-      <div class="seg" id="show">${[["tout", "Tout"], ["chantiers", "Chantiers"], ["conges", "Congés"]].map(([k, l]) => `<button type="button" data-s="${k}" class="${k === show ? "on" : ""}">${l}</button>`).join("")}</div>
+      ${seg("show", [["tout", "Tout"], ["chantiers", "Chantiers"], ["conges", "Congés"]], show, "s")}
       <label>Collaborateur<select id="who"><option value="">Tous</option>${state.profiles.filter((p) => p.active).map((p) => `<option value="${p.id}" ${p.id === who ? "selected" : ""}>${esc(p.full_name)}</option>`).join("")}</select></label>
     </div>
     <h3 id="ctitle"></h3>
@@ -634,59 +639,111 @@ export async function renderCalendar() {
     <div class="cal-legend"><span class="ev ev-m">Chantier</span>${state.leaveTypes.filter((t) => t.active).map((t) => `<span class="ev ev-l" style="--c:${esc(t.color)}">${esc(t.label)}</span>`).join("")}
       <span class="ev ev-l pending" style="--c:#999">En attente d'approbation</span></div>`;
 
+  const team = (m, full) => m.mission_members.map((x) => (full ? nameOf(x.user_id) : nameOf(x.user_id).split(" ")[0]) + (full && x.user_id === m.team_leader_id ? " ★" : "")).join(", ");
+  const dRange = (a, b) => (b && b !== a ? `${fmtDate(a)} → ${fmtDate(b)}` : fmtDate(a));
+
+  // Puce d'un chantier : compacte (mois) ou détaillée (semaine, jour)
+  const mChip = (m, ds, detail) => `<a class="ev ev-m st-${m.status} ${detail ? "ev-big" : ""}" href="#/mission/${m.id}" title="${esc(m.title)} · ${esc(m.clients?.name || "")} · ${esc(team(m, true))}">
+    ${m.start_time && ds === m.scheduled_date ? `<b>${m.start_time.slice(0, 5)}</b> ` : ""}${esc(m.title)}
+    ${detail ? `<small>${esc(m.clients?.name || "")}${m.address ? " · " + esc(m.address) : ""}</small><small>👷 ${esc(team(m, true)) || "-"}</small><small>${STATUS_LABEL[m.status] || m.status}${m.end_date && m.end_date !== m.scheduled_date ? " · " + dRange(m.scheduled_date, m.end_date) : ""}</small>`
+      : `<small>${esc(team(m, false))}</small>`}</a>`;
+  const lChip = (l, detail) => { const t = leaveType(l.type); return `<span class="ev ev-l ${l.status === "en_attente" ? "pending" : ""} ${detail ? "ev-big" : ""}" style="--c:${esc(t.color)}">
+    ${esc(nameOf(l.user_id))}<small>${esc(t.label)}${l.status === "en_attente" ? " · en attente" : ""}</small>${detail ? `<small>${dRange(l.start_date, l.end_date)}${l.amount ? " · " + fmtQty(l.amount, t.unit) : ""}</small>` : ""}</span>`; };
+
   const load = async () => {
-    sessionStorage.setItem("mm_cal", JSON.stringify({ ref, who, show }));
-    v.querySelector("#ref").value = ref.slice(0, 7);
-    v.querySelectorAll("#show button").forEach((b) => b.classList.toggle("on", b.dataset.s === show));
-    const d0 = new Date(ref.slice(0, 7) + "-01T12:00:00");
-    const first = new Date(d0), last = new Date(d0.getFullYear(), d0.getMonth() + 1, 0, 12);
-    const gStart = new Date(first); gStart.setDate(first.getDate() - ((first.getDay() + 6) % 7));
-    const gEnd = new Date(last); gEnd.setDate(last.getDate() + (6 - ((last.getDay() + 6) % 7)));
-    const from = todayStr(gStart), to = todayStr(gEnd);
-    v.querySelector("#ctitle").textContent = first.toLocaleDateString("fr-BE", { month: "long", year: "numeric" }).replace(/^./, (c) => c.toUpperCase());
+    sessionStorage.setItem("mm_cal", JSON.stringify({ ref, who, show, period, layout }));
+    v.querySelector("#ref").value = ref;
+    [["#period", "p", period], ["#layout", "l", layout], ["#show", "s", show]].forEach(([id, a, cur]) =>
+      v.querySelectorAll(`${id} button`).forEach((b) => b.classList.toggle("on", b.dataset[a] === cur)));
+
+    const r = periodRange(ref, period);
+    let gFrom = r.from, gTo = r.to;
+    if (period === "mois" && layout === "cal") {
+      const f = new Date(r.from + "T12:00:00"), l = new Date(r.to + "T12:00:00");
+      f.setDate(f.getDate() - ((f.getDay() + 6) % 7)); l.setDate(l.getDate() + (6 - ((l.getDay() + 6) % 7)));
+      gFrom = todayStr(f); gTo = todayStr(l);
+    }
+    v.querySelector("#ctitle").textContent = r.label.charAt(0).toUpperCase() + r.label.slice(1);
 
     const [missions, leaves] = await Promise.all([
-      show === "conges" ? [] : q(sb.from("missions").select("id, title, scheduled_date, end_date, start_time, status, team_leader_id, clients(name), mission_members(user_id)")
-        .lte("scheduled_date", to).or(`end_date.gte.${from},and(end_date.is.null,scheduled_date.gte.${from})`).neq("status", "annulee").order("start_time")),
-      show === "chantiers" ? [] : q(sb.from("leave_requests").select("*").lte("start_date", to).gte("end_date", from).neq("status", "refusee")),
+      show === "conges" ? [] : q(sb.from("missions").select("id, title, address, scheduled_date, end_date, start_time, status, team_leader_id, clients(name), mission_members(user_id)")
+        .lte("scheduled_date", gTo).or(`end_date.gte.${gFrom},and(end_date.is.null,scheduled_date.gte.${gFrom})`).neq("status", "annulee").order("start_time")),
+      show === "chantiers" ? [] : q(sb.from("leave_requests").select("*").lte("start_date", gTo).gte("end_date", gFrom).neq("status", "refusee")),
     ]);
     const ms = missions.filter((m) => !who || m.mission_members.some((x) => x.user_id === who));
     const ls = leaves.filter((l) => !who || l.user_id === who);
-
     const days = [];
-    for (let d = new Date(gStart); d <= gEnd; d.setDate(d.getDate() + 1)) days.push(todayStr(d));
+    for (let d = new Date(gFrom + "T12:00:00"); todayStr(d) <= gTo; d.setDate(d.getDate() + 1)) days.push(todayStr(d));
+    const isWe = (ds) => [0, 6].includes(new Date(ds + "T12:00:00").getDay());
+    const dayM = (ds) => ms.filter((m) => m.scheduled_date <= ds && ds <= (m.end_date || m.scheduled_date))
+      .sort((a, b) => (a.start_time || "99").localeCompare(b.start_time || "99"));
+    const dayL = (ds) => (isWe(ds) ? [] : ls.filter((l) => l.start_date <= ds && ds <= l.end_date));
     const today = todayStr();
+    const out = v.querySelector("#cal");
+
+    // ---------- Vue liste ----------
+    if (layout === "liste") {
+      const rows = [
+        ...ms.map((m) => ({ d: m.scheduled_date < r.from ? r.from : m.scheduled_date, kind: "m", m })),
+        ...ls.map((l) => ({ d: l.start_date < r.from ? r.from : l.start_date, kind: "l", l })),
+      ].filter((x) => x.d <= r.to).sort((a, b) => a.d.localeCompare(b.d) || (a.kind === "m" ? (a.m.start_time || "99") : "zz").localeCompare(b.kind === "m" ? (b.m.start_time || "99") : "zz"));
+      out.innerHTML = rows.length ? `<div class="table-wrap"><table class="table"><thead><tr><th>Date</th><th>Heure</th><th>Type</th><th>Intitulé</th><th>Personnes</th><th>Statut</th></tr></thead><tbody>
+        ${rows.map((x, i) => {
+          const sep = i && rows[i - 1].d !== x.d ? "day-sep" : "";
+          const dl = new Date(x.d + "T12:00:00").toLocaleDateString("fr-BE", { weekday: "short", day: "2-digit", month: "2-digit" });
+          if (x.kind === "m") { const m = x.m; return `<tr class="${sep}"><td>${dl}${m.end_date && m.end_date !== m.scheduled_date ? `<br><small class="muted">${dRange(m.scheduled_date, m.end_date)}</small>` : ""}</td>
+            <td>${m.start_time ? m.start_time.slice(0, 5) : "-"}</td><td><span class="dot" style="background:var(--green)"></span>Chantier</td>
+            <td><a href="#/mission/${m.id}"><b>${esc(m.title)}</b></a><br><small class="muted">${esc(m.clients?.name || "")}${m.address ? " · " + esc(m.address) : ""}</small></td>
+            <td>${esc(team(m, true)) || "-"}</td><td><span class="badge st-${m.status}">${STATUS_LABEL[m.status] || m.status}</span></td></tr>`; }
+          const l = x.l, t = leaveType(l.type);
+          return `<tr class="${sep}"><td>${dl}${l.end_date !== l.start_date ? `<br><small class="muted">${dRange(l.start_date, l.end_date)}</small>` : ""}</td><td>-</td>
+            <td><span class="dot" style="background:${esc(t.color)}"></span>Congé</td><td><b>${esc(t.label)}</b>${l.amount ? `<br><small class="muted">${fmtQty(l.amount, t.unit)}</small>` : ""}</td>
+            <td>${esc(nameOf(l.user_id))}</td><td><span class="badge lv-${l.status}">${LEAVE_STATUS[l.status]}</span></td></tr>`;
+        }).join("")}</tbody></table></div>` : `<p class="muted">Rien de planifié sur cette période.</p>`;
+      return;
+    }
+
+    // ---------- Vue jour ----------
+    if (period === "jour") {
+      const dm = dayM(ref), dl = dayL(ref);
+      out.innerHTML = `<div class="cal-dayview">
+        <section class="panel"><h4>Chantiers (${dm.length})</h4>${dm.length ? dm.map((m) => mChip(m, ref, true)).join("") : `<p class="muted">Aucun chantier.</p>`}</section>
+        <section class="panel"><h4>Absences (${dl.length})</h4>${dl.length ? dl.map((l) => lChip(l, true)).join("") : `<p class="muted">${isWe(ref) ? "Week-end." : "Aucune absence."}</p>`}</section></div>`;
+      return;
+    }
+
+    // ---------- Vues semaine et mois (grille) ----------
+    const detail = period === "semaine";
+    const d0 = new Date(r.from + "T12:00:00");
     const cell = (ds) => {
       const dt = new Date(ds + "T12:00:00");
-      const inMonth = dt.getMonth() === d0.getMonth(), we = dt.getDay() === 0 || dt.getDay() === 6;
-      const dm = ms.filter((m) => m.scheduled_date <= ds && ds <= (m.end_date || m.scheduled_date));
-      const dl = ls.filter((l) => l.start_date <= ds && ds <= l.end_date && !we);
+      const inMonth = detail || dt.getMonth() === d0.getMonth(), we = isWe(ds);
+      const dm = dayM(ds), dl = dayL(ds);
       return `<div class="cal-day ${inMonth ? "" : "out"} ${we ? "we" : ""} ${ds === today ? "today" : ""} ${dm.length || dl.length ? "has" : ""}">
-        <div class="cal-num"><span class="cal-wd">${dt.toLocaleDateString("fr-BE", { weekday: "short" })}</span> ${dt.getDate()}</div>
-        ${dm.map((m) => `<a class="ev ev-m st-${m.status}" href="#/mission/${m.id}" title="${esc(m.title)} · ${esc(m.clients?.name || "")} · ${esc(m.mission_members.map((x) => nameOf(x.user_id)).join(", "))}">
-          ${m.start_time && ds === m.scheduled_date ? `<b>${m.start_time.slice(0, 5)}</b> ` : ""}${esc(m.title)}<small>${esc(m.mission_members.map((x) => nameOf(x.user_id).split(" ")[0]).join(", "))}</small></a>`).join("")}
-        ${dl.map((l) => { const t = leaveType(l.type); return `<span class="ev ev-l ${l.status === "en_attente" ? "pending" : ""}" style="--c:${esc(t.color)}" title="${esc(t.label)}${l.status === "en_attente" ? " (en attente)" : ""}">
-          ${esc(nameOf(l.user_id))}<small>${esc(t.label)}${l.status === "en_attente" ? " · en attente" : ""}</small></span>`; }).join("")}
-      </div>`;
+        <div class="cal-num"><span class="cal-wd">${dt.toLocaleDateString("fr-BE", { weekday: "short" })}</span> ${dt.getDate()}${detail ? ` <span class="muted">${dt.toLocaleDateString("fr-BE", { month: "short" })}</span>` : ""}</div>
+        ${dm.map((m) => mChip(m, ds, detail)).join("")}${dl.map((l) => lChip(l, detail)).join("")}</div>`;
     };
-    v.querySelector("#cal").innerHTML = `<div class="cal-grid">
+    out.innerHTML = `<div class="cal-grid ${detail ? "cal-week" : ""}">
       ${["Lun", "Mar", "Mer", "Jeu", "Ven", "Sam", "Dim"].map((d) => `<div class="cal-head">${d}</div>`).join("")}
       ${days.map(cell).join("")}</div>`;
   };
 
   const reload = () => load().catch((er) => toast(er.message, "err"));
-  const shift = (n) => { const d = new Date(ref.slice(0, 7) + "-01T12:00:00"); d.setMonth(d.getMonth() + n); ref = todayStr(d); reload(); };
-  v.querySelector("#prev").onclick = () => shift(-1);
-  v.querySelector("#next").onclick = () => shift(1);
+  v.querySelector("#prev").onclick = () => { ref = shiftRef(ref, period, -1); reload(); };
+  v.querySelector("#next").onclick = () => { ref = shiftRef(ref, period, 1); reload(); };
   v.querySelector("#today").onclick = () => { ref = todayStr(); reload(); };
-  v.querySelector("#ref").onchange = (e) => { if (e.target.value) { ref = e.target.value + "-01"; reload(); } };
+  v.querySelector("#ref").onchange = (e) => { if (e.target.value) { ref = e.target.value; reload(); } };
   v.querySelector("#who").onchange = (e) => { who = e.target.value; reload(); };
+  v.querySelectorAll("#period button").forEach((b) => (b.onclick = () => { period = b.dataset.p; reload(); }));
+  v.querySelectorAll("#layout button").forEach((b) => (b.onclick = () => { layout = b.dataset.l; reload(); }));
   v.querySelectorAll("#show button").forEach((b) => (b.onclick = () => { show = b.dataset.s; reload(); }));
   v.querySelector("#prt").onclick = () => printDoc(`Calendrier · ${v.querySelector("#ctitle").textContent}`,
     v.querySelector("#cal").innerHTML + v.querySelector(".cal-legend").outerHTML,
-    { landscape: true, subtitle: `${who ? nameOf(who) : "Toute l'équipe"} · ${{ tout: "chantiers et congés", chantiers: "chantiers", conges: "congés" }[show]}` });
+    { landscape: layout === "cal" && period !== "jour", subtitle: `${who ? nameOf(who) : "Toute l'équipe"} · ${{ tout: "chantiers et congés", chantiers: "chantiers", conges: "congés" }[show]}` });
   await load();
 }
+
+const STATUS_LABEL = { planifiee: "Planifiée", en_cours: "En cours", terminee: "Terminée", annulee: "Annulée" };
 
 // =====================================================================
 // GESTION DES UTILISATEURS (admin + RH)
