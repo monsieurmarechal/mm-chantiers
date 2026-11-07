@@ -1,4 +1,4 @@
-import { sb, state, q, esc, $, view, toast, busy, isStaff, isAdmin, ROLES, todayStr, loadProfiles, loadSettings } from "./core.js";
+import { sb, state, q, esc, $, view, toast, busy, isStaff, isAdmin, ROLES, todayStr, loadProfiles, loadSettings, loadLeaveTypes } from "./core.js";
 import { SUPABASE_ANON_KEY } from "./config.js";
 import * as M from "./missions.js";
 import * as H from "./hr.js";
@@ -12,8 +12,8 @@ function navItems() {
     ["#/missions", r === "collaborateur" ? "Mes chantiers" : "Ordres de mission", "🏗"],
     ["#/conges", "Congés / heures sup.", "🗓"],
   ];
-  if (isStaff()) items.push(["#/rh", "Récap. prestations", "📊"], ["#/clients", "Clients", "👥"], ["#/outils", "Outils", "🧰"], ["#/utilisateurs", "Utilisateurs", "🔐"]);
-  if (isAdmin()) items.push(["#/carte", "Localisation", "📍"], ["#/parametres", "Paramètres", "⚙"]);
+  if (isStaff()) items.push(["#/compteurs", "Compteurs congés", "🧮"], ["#/rh", "Récap. prestations", "📊"], ["#/clients", "Clients", "👥"], ["#/outils", "Outils", "🧰"], ["#/utilisateurs", "Utilisateurs", "🔐"]);
+  if (isAdmin()) items.push(["#/carte", "Localisation", "📍"], ["#/types-conges", "Types de congés", "🏷"], ["#/parametres", "Paramètres", "⚙"]);
   items.push(["#/compte", "Mon compte", "👤"]);
   return items;
 }
@@ -51,6 +51,8 @@ async function route() {
     else if (p[0] === "mission" && p[2] === "sign") await M.renderSign(p[1], p[3]);
     else if (p[0] === "mission") await M.renderDetail(p[1]);
     else if (p[0] === "conges") await H.renderLeaves();
+    else if (p[0] === "compteurs") await H.renderCounters();
+    else if (p[0] === "types-conges") await H.renderLeaveTypes();
     else if (p[0] === "rh") await H.renderRecap();
     else if (p[0] === "utilisateurs") await H.renderUsers();
     else if (p[0] === "compte") await H.renderAccount();
@@ -111,7 +113,7 @@ async function start() {
   }
   state.profile = prof;
   if (prof.must_change_password) return renderForcedPassword();
-  await Promise.all([loadSettings(), loadProfiles()]);
+  await Promise.all([loadSettings(), loadProfiles(), loadLeaveTypes()]);
   renderShell();
   route();
   // Reprise du suivi de position si une journée est en cours
