@@ -1,5 +1,5 @@
 import {
-  sb, state, q, esc, view, toast, modal, confirmBox, busy, formData, isStaff, isAdmin, fmtDateTime, nameOf, loadProfiles, loadSettings, downloadCsv, printDoc,
+  sb, state, q, esc, view, toast, modal, confirmBox, busy, formData, isStaff, isAdmin, callFn, fmtDateTime, nameOf, loadProfiles, loadSettings, downloadCsv, printDoc,
 } from "./core.js";
 import { geocode, locateFromWorkshop } from "./geo.js";
 
@@ -153,6 +153,18 @@ export async function renderSettings() {
       </form>
       <button class="btn ghost" id="recalc">Recalculer les distances de tous les clients</button>
       <p class="muted small">À utiliser après un changement d'adresse de l'atelier (1 client par seconde).</p>
+    </section>
+    <section class="panel narrow" id="backup">
+      <h3>Sauvegardes</h3>
+      <p>Une <b>sauvegarde automatique</b> est réalisée chaque <b>lundi vers 3 h</b> : archive ZIP de toutes les données au format CSV, conservée 12 semaines ci-dessous et envoyée à l'e-mail des rapports si l'envoi d'e-mails est configuré.</p>
+      <h4>Sauvegarde manuelle</h4>
+      <div class="row"><button class="btn" id="bk-zip">⬇ Tout télécharger (ZIP de CSV)</button>
+        <button class="btn ghost" id="bk-now">Lancer une sauvegarde serveur maintenant</button></div>
+      <div class="row" style="margin-top:10px"><select id="bk-table" style="width:auto">${BACKUP_TABLES.map(([t, l]) => `<option value="${t}">${l}</option>`).join("")}</select>
+        <button class="btn ghost" id="bk-csv">⬇ Télécharger ce CSV</button></div>
+      <div id="bk-prog" class="muted small"></div>
+      <h4>Sauvegardes conservées</h4>
+      <div id="bk-list"><p class="muted">Chargement…</p></div>
     </section>`;
   const f = v.querySelector("#sf");
   f.onsubmit = (e) => {
@@ -178,6 +190,103 @@ export async function renderSettings() {
       await new Promise((r) => setTimeout(r, 1100));
     }
     toast(`${n} / ${clients.length} clients mis à jour`);
+  });
+  bindBackup(v);
+}
+
+// =====================================================================
+// SAUVEGARDES CSV (admin)
+// =====================================================================
+const BACKUP_TABLES = [
+  ["export_prestations", "Prestations (lisible)"], ["profiles", "Utilisateurs"], ["clients", "Clients"], ["tools", "Outils"],
+  ["missions", "Ordres de mission"], ["mission_members", "Équipes des chantiers"], ["mission_tools", "Outillage des chantiers"],
+  ["mission_files", "Documents joints (liste)"], ["time_entries", "Pointages (brut)"], ["day_reports", "Rapports signés"],
+  ["mission_photos", "Photos (liste)"], ["leave_types", "Types de congés"], ["leave_requests", "Demandes de congé"],
+  ["leave_allocations", "Droits aux congés"], ["overtime_adjustments", "Mouvements d'heures sup."], ["settings", "Paramètres"],
+];
+
+async function fetchAll(table) {
+  const rows = [];
+  for (let from = 0; ; from += 1000) {
+    const data = await q(sb.from(table).select("*").range(from, from + 999));
+    rows.push(...data);
+    if (data.length < 1000) break;
+  }
+  return rows;
+}
+
+// CSV compatible Excel (séparateur point-virgule, UTF-8 avec BOM)
+function toCsv(rows) {
+  if (!rows.length) return "\ufeff";
+  const cols = [...new Set(rows.flatMap((r) => Object.keys(r)))];
+  const cell = (v) => {
+    if (v === null || v === undefined) return "";
+    const s = typeof v === "object" ? JSON.stringify(v) : String(v);
+    return /[";\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  return "\ufeff" + [cols.join(";"), ...rows.map((r) => cols.map((c) => cell(r[c])).join(";"))].join("\r\n");
+}
+
+function saveBlob(blob, name) {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+}
+
+async function loadBackupList(el) {
+  const { data: folders, error } = await sb.storage.from("backups").list("", { limit: 100, sortBy: { column: "name", order: "desc" } });
+  if (error) { el.innerHTML = `<p class="muted">${esc(error.message)}</p>`; return; }
+  const dated = (folders || []).filter((f) => /^\d{4}-\d{2}-\d{2}$/.test(f.name)).slice(0, 12);
+  if (!dated.length) { el.innerHTML = `<p class="muted">Aucune sauvegarde serveur pour l'instant.</p>`; return; }
+  const items = [];
+  for (const f of dated) {
+    const { data: inner } = await sb.storage.from("backups").list(f.name);
+    for (const x of inner || []) {
+      const { data: u } = await sb.storage.from("backups").createSignedUrl(`${f.name}/${x.name}`, 600, { download: x.name });
+      items.push({ date: f.name, name: x.name, size: x.metadata?.size, url: u?.signedUrl });
+    }
+  }
+  el.innerHTML = `<ul class="files">${items.map((i) => `<li><a href="${i.url}">📦 ${esc(i.name)}</a>
+    <span class="muted small">${new Date(i.date + "T12:00:00").toLocaleDateString("fr-BE", { dateStyle: "full" })}${i.size ? ` · ${(i.size / 1024).toFixed(0)} Ko` : ""}</span></li>`).join("")}</ul>`;
+}
+
+function bindBackup(v) {
+  const prog = v.querySelector("#bk-prog");
+  const list = v.querySelector("#bk-list");
+  const date = () => new Date().toISOString().slice(0, 10);
+  loadBackupList(list).catch((e) => (list.innerHTML = `<p class="muted">${esc(e.message)}</p>`));
+
+  v.querySelector("#bk-zip").onclick = (e) => busy(e.target, async () => {
+    const { default: JSZip } = await import("https://esm.sh/jszip@3.10.1");
+    const zip = new JSZip();
+    const counts = [];
+    for (const [t, label] of BACKUP_TABLES) {
+      prog.textContent = `Export : ${label}…`;
+      const rows = await fetchAll(t);
+      zip.file(`${t}.csv`, toCsv(rows));
+      counts.push(`${t} : ${rows.length} ligne(s)`);
+    }
+    zip.file("LISEZ-MOI.txt", `Sauvegarde manuelle Monsieur Maréchal du ${date()}.\r\nFichiers CSV (séparateur point-virgule, UTF-8), ouvrables dans Excel.\r\n\r\n${counts.join("\r\n")}`);
+    prog.textContent = "Compression…";
+    saveBlob(await zip.generateAsync({ type: "blob", compression: "DEFLATE" }), `sauvegarde-mm-${date()}.zip`);
+    prog.textContent = `Sauvegarde téléchargée (${BACKUP_TABLES.length} fichiers CSV).`;
+  });
+
+  v.querySelector("#bk-csv").onclick = (e) => busy(e.target, async () => {
+    const t = v.querySelector("#bk-table").value;
+    const rows = await fetchAll(t);
+    saveBlob(new Blob([toCsv(rows)], { type: "text/csv;charset=utf-8" }), `${t}-${date()}.csv`);
+    prog.textContent = `${rows.length} ligne(s) exportée(s).`;
+  });
+
+  v.querySelector("#bk-now").onclick = (e) => busy(e.target, async () => {
+    prog.textContent = "Sauvegarde serveur en cours…";
+    const r = await callFn("backup", {});
+    prog.textContent = `Sauvegarde enregistrée (${(r.size / 1024).toFixed(0)} Ko)${r.emailed ? ", envoyée par e-mail" : r.mailError ? " ; e-mail non envoyé" : ""}.`;
+    toast("Sauvegarde réalisée");
+    loadBackupList(list);
   });
 }
 
