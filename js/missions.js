@@ -1,6 +1,6 @@
 import {
   sb, state, q, esc, view, toast, modal, confirmBox, busy, formData, isStaff, isAdmin, callFn,
-  STATUS, todayStr, fmtDate, fmtTime, fmtDateTime, fmtH, hoursBetween, toIso, toHHMM, nowHHMM, nameOf, loadProfiles,
+  STATUS, todayStr, fmtDate, fmtTime, fmtDateTime, fmtH, hoursBetween, toIso, toHHMM, nowHHMM, nameOf, loadProfiles, printDoc,
 } from "./core.js";
 import { locateFromWorkshop, startTracking, stopTracking, sendPositionOnce } from "./geo.js";
 
@@ -270,6 +270,7 @@ export async function renderDetail(id) {
         <h4>Outillage spécifique</h4>
         ${mtools.length ? `<ul>${mtools.map((x) => `<li>${x.qty} × ${esc(x.tools?.name)} <span class="muted">${esc(x.tools?.location || "")}</span></li>`).join("")}</ul>` : `<p class="muted">Aucun</p>`}
         <h4>Plans et documents</h4><div id="files"></div>
+        <div class="actions"><button class="btn ghost" id="print">🖨 Imprimer l'ordre de mission</button></div>
         ${staff ? `<div class="actions">
           <a class="btn ghost" href="#/mission/${id}/edit">Modifier</a>
           <button class="btn ghost" id="share">Envoyer l'ordre</button>
@@ -293,6 +294,11 @@ export async function renderDetail(id) {
     workDate = e.target.value;
     sessionStorage.setItem(`mm_wd_${id}`, workDate);
     drawPointage();
+  };
+
+  v.querySelector("#print").onclick = async () => {
+    const files = await q(sb.from("mission_files").select("name").eq("mission_id", id));
+    printDoc(`Ordre de mission n° ${m.id}`, orderPrintHtml(m, memberIds, mtools, files), { subtitle: m.title });
   };
 
   if (staff) {
@@ -453,6 +459,31 @@ function punchField(name, label, e, locked) {
   return `<div class="punch-item"><span>${label}</span>
     <div class="row"><input type="time" name="${name}" value="${toHHMM(e?.[name])}" ${locked ? "disabled" : ""}>
     ${locked ? "" : `<button type="button" class="btn small" data-now="${name}">Maintenant</button>`}</div></div>`;
+}
+
+function orderPrintHtml(m, memberIds, mtools, files) {
+  const row = (k, val) => `<tr><th>${k}</th><td>${val}</td></tr>`;
+  return `
+    <table class="pr-kv">
+      ${row("Client", `${esc(m.clients?.name || "-")}${m.clients?.phone ? ` · ${esc(m.clients.phone)}` : ""}${m.clients?.contact ? ` · ${esc(m.clients.contact)}` : ""}`)}
+      ${row("Adresse du chantier", esc(m.address))}
+      ${row("Distance depuis l'atelier", m.distance_km != null ? `${m.distance_km} km · ~${m.duration_min} min` : "-")}
+      ${row("Date", `${fmtDate(m.scheduled_date)}${m.end_date && m.end_date !== m.scheduled_date ? ` au ${fmtDate(m.end_date)}` : ""}`)}
+      ${row("Présence sur place", `<b>${m.start_time ? m.start_time.slice(0, 5) : "-"}</b>`)}
+      ${row("Équipe", memberIds.map((u) => esc(nameOf(u)) + (u === m.team_leader_id ? " <b>(chef d'équipe)</b>" : "")).join(", ") || "-")}
+      ${row("Statut", STATUS[m.status] || m.status)}
+    </table>
+    <h3>Description du travail</h3><p class="pre">${esc(m.description || "-")}</p>
+    <h3>Matériel à emporter</h3><p class="pre">${esc(m.materials || "-")}</p>
+    <h3>Outillage spécifique</h3>
+    ${mtools.length ? `<table class="table"><thead><tr><th style="width:30px">✓</th><th>Qté</th><th>Outil</th><th>Emplacement</th></tr></thead><tbody>
+      ${mtools.map((x) => `<tr><td>☐</td><td>${x.qty}</td><td>${esc(x.tools?.name)}</td><td>${esc(x.tools?.location || "")}</td></tr>`).join("")}</tbody></table>` : "<p>Aucun</p>"}
+    ${files.length ? `<h3>Documents joints (dans l'application)</h3><ul>${files.map((f) => `<li>${esc(f.name)}</li>`).join("")}</ul>` : ""}
+    <h3>Pointage et observations</h3>
+    <table class="table pr-fill"><thead><tr><th>Collaborateur</th><th>Arrivée atelier</th><th>Arrivée chantier</th><th>Fin chantier</th></tr></thead><tbody>
+      ${(memberIds.length ? memberIds : [null, null]).map((u) => `<tr><td>${u ? esc(nameOf(u)) : ""}</td><td></td><td></td><td></td></tr>`).join("")}</tbody></table>
+    <div class="pr-box">Remarques / exclusions :</div>
+    <div class="pr-sign"><div>Nom du client :</div><div>Signature pour accord :</div></div>`;
 }
 
 function orderText(m, memberIds, mtools) {
