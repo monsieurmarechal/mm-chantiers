@@ -163,8 +163,10 @@ export function printDoc(title, html, { landscape = false, subtitle = "" } = {})
   style.textContent = `@page { size: A4 ${landscape ? "landscape" : "portrait"}; margin: 12mm; }`;
   const done = () => { document.body.classList.remove("printing"); el.remove(); window.removeEventListener("afterprint", done); };
   window.addEventListener("afterprint", done);
-  // Laisse le temps aux images (photos, logos) de se charger
-  setTimeout(() => window.print(), 300);
+  // Attend le chargement des images (photos, signatures), 15 s maximum
+  const imgs = [...el.querySelectorAll("img")].filter((i) => !i.complete);
+  const loaded = Promise.all(imgs.map((i) => new Promise((r) => { i.onload = i.onerror = r; })));
+  Promise.race([loaded, new Promise((r) => setTimeout(r, 15000))]).then(() => setTimeout(() => window.print(), 200));
 }
 
 export function downloadCsv(filename, rows) {
