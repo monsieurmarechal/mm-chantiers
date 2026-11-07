@@ -12,7 +12,7 @@ function navItems() {
     ["#/missions", r === "collaborateur" ? "Mes chantiers" : "Ordres de mission", "🏗"],
     ["#/conges", "Congés / heures sup.", "🗓"],
   ];
-  if (isStaff()) items.push(["#/compteurs", "Compteurs congés", "🧮"], ["#/types-conges", "Types de congés", "🏷"], ["#/rh", "Récap. prestations", "📊"], ["#/clients", "Clients", "👥"], ["#/outils", "Outils", "🧰"], ["#/utilisateurs", "Utilisateurs", "🔐"]);
+  if (isStaff()) items.push(["#/compteurs", "Compteurs congés", "🧮"], ["#/types-conges", "Types de congés", "🏷"], ["#/rh", "Récap. prestations", "📊"], ["#/calendrier", "Calendrier", "📅"], ["#/clients", "Clients", "👥"], ["#/outils", "Outils", "🧰"], ["#/utilisateurs", "Utilisateurs", "🔐"]);
   if (isAdmin()) items.push(["#/carte", "Localisation", "📍"], ["#/parametres", "Paramètres", "⚙"]);
   items.push(["#/compte", "Mon compte", "👤"]);
   return items;
@@ -55,6 +55,7 @@ async function route() {
     else if (p[0] === "compteurs") await H.renderCounters();
     else if (p[0] === "types-conges") await H.renderLeaveTypes();
     else if (p[0] === "rh") await H.renderRecap();
+    else if (p[0] === "calendrier") await H.renderCalendar();
     else if (p[0] === "utilisateurs") await H.renderUsers();
     else if (p[0] === "compte") await H.renderAccount();
     else if (p[0] === "outils") await A.renderTools();
