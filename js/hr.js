@@ -3,6 +3,7 @@ import {
   LEAVE_STATUS, todayStr, fmtDate, fmtTime, fmtDateTime, fmtH, hoursBetween, nameOf, loadProfiles, downloadCsv,
   loadLeaveTypes, leaveType, fmtQty, businessDays, printDoc,
 } from "./core.js";
+import { editEntryModal } from "./missions.js";
 
 const appUrl = () => location.origin + location.pathname;
 const yearOf = (d) => +String(d).slice(0, 4);
@@ -542,7 +543,7 @@ export async function renderRecap() {
       <div class="kpis">${[...per.entries()].sort((a, b) => nameOf(a[0]).localeCompare(nameOf(b[0]))).map(([u, t]) => `<div class="kpi"><span>${esc(nameOf(u))}</span><b>${fmtH(t.total)}</b>
         <small>${t.days.size} j · chantier ${fmtH(t.site)}</small></div>`).join("")}</div>
       <div class="table-wrap"><table class="table"><thead><tr><th>Date</th><th>Collaborateur</th><th>Chantier</th><th>Arrivée atelier</th><th>Arrivée chantier</th><th>Fin</th>
-        <th>Trajet</th><th>Sur chantier</th><th>Total</th><th>Remarques</th></tr></thead><tbody>
+        <th>Trajet</th><th>Sur chantier</th><th>Total</th><th>Remarques</th><th class="no-print"></th></tr></thead><tbody>
       ${rows.map((r, i) => `<tr class="${i && rows[i - 1].date !== r.date ? "day-sep" : ""}">
         <td>${new Date(r.date + "T12:00:00").toLocaleDateString("fr-BE", { weekday: "short", day: "2-digit", month: "2-digit" })}</td>
         <td>${esc(nameOf(r.user))}</td>
@@ -550,10 +551,14 @@ export async function renderRecap() {
         <td>${fmtTime(r.e.workshop_arrival)}</td><td>${fmtTime(r.e.site_arrival)}</td>
         <td>${r.e.site_end ? fmtTime(r.e.site_end) : `<span class="badge st-annulee">En cours / incomplet</span>`}</td>
         <td>${fmtH(r.travel)}</td><td>${fmtH(r.site)}</td><td><b>${fmtH(r.total)}</b></td>
-        <td class="small">${[r.e.note, r.e.technical_note && "Tech. : " + r.e.technical_note, r.e.exclusion_note && "Excl. : " + r.e.exclusion_note].filter(Boolean).map(esc).join("<br>")}</td></tr>`).join("")}
-      </tbody><tfoot><tr><th colspan="6">Total période (${rows.length} prestation${rows.length > 1 ? "s" : ""})</th><th>${fmtH(sum("travel"))}</th><th>${fmtH(sum("site"))}</th><th>${fmtH(sum("total"))}</th><th></th></tr></tfoot></table></div>
+        <td class="small">${[r.e.note, r.e.technical_note && "Tech. : " + r.e.technical_note, r.e.exclusion_note && "Excl. : " + r.e.exclusion_note].filter(Boolean).map(esc).join("<br>")}
+          ${r.e.edited_by ? `<br><span class="badge" title="${esc(r.e.edit_reason || "")}">corrigé par ${esc(nameOf(r.e.edited_by))}</span>` : ""}</td>
+        <td class="right no-print"><button class="btn small ghost" data-fix="${r.e.id}">Corriger</button></td></tr>`).join("")}
+      </tbody><tfoot><tr><th colspan="6">Total période (${rows.length} prestation${rows.length > 1 ? "s" : ""})</th><th>${fmtH(sum("travel"))}</th><th>${fmtH(sum("site"))}</th><th>${fmtH(sum("total"))}</th><th></th><th class="no-print"></th></tr></tfoot></table></div>
       <p class="muted small">Total = arrivée atelier → fin de chantier. Trajet = atelier → arrivée chantier.</p>`
       : `<p class="muted">Aucune prestation sur cette période.</p>`;
+    v.querySelectorAll("[data-fix]").forEach((b) => (b.onclick = () =>
+      editEntryModal({ entry: rows.find((r) => String(r.e.id) === b.dataset.fix).e, onDone: reload })));
   };
 
   const reload = () => load().catch((er) => toast(er.message, "err"));
