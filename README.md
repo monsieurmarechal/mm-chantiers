@@ -20,10 +20,11 @@ Application web installable sur Android (PWA) : ordres de mission, pointages, si
 | Signature client en fin de journée + rapport e-mail (photos jointes) | Oui | Oui | **Chef d'équipe uniquement** |
 | Demande de congé / récupération (jours ouvrables calculés, demi-journées) | Oui | Oui | Oui |
 | Compteurs de congés par collaborateur et par année (allocation, pris, solde) + heures sup. | Modifier | Modifier | Consulter les siens |
-| Types de congés paramétrables (unité, compteur, débit heures sup., couleur) | Oui | Non | Non |
+| Types de congés paramétrables (unité, compteur, débit heures sup., couleur), créables aussi depuis Compteurs | Oui | Oui | Non |
+| Fiche complète du travailleur (soldes par type, demandes, mouvements d'heures sup., impression) | Oui | Oui | Non |
 | Impression / PDF : ordre de mission, compteurs, récap prestations, clients, outils | Oui | Oui | Ordre de mission |
 | Approbation des demandes, mise à jour du compteur d'heures sup. | Oui | Oui | Non |
-| Récapitulatif des prestations par personne / jour / semaine / mois + export CSV | Oui | Oui | Non |
+| Récapitulatif des prestations : une ligne par jour et par chantier, vue jour / semaine / mois avec navigation, export CSV, impression | Oui | Oui | Non |
 | Gestion des utilisateurs (création avec mot de passe provisoire, réinitialisation, désactivation, rôle) | Oui | Oui (sauf comptes admin) | Non |
 | Carte de localisation des collaborateurs | Oui | Non | Non |
 
@@ -115,6 +116,7 @@ Ouvrir l'adresse dans **Chrome** > menu ⋮ > **Ajouter à l'écran d'accueil** 
 - **Distances** : itinéraire routier via le serveur public OSRM ; en cas d'indisponibilité, estimation à vol d'oiseau × 1,3 (signalée « estimation »).
 - **Pièces jointes** : 50 Mo maximum par fichier (limite Supabase gratuite).
 - **Photos** : compressées dans le téléphone (1600 px, ~300 Ko). 1 Go de stockage gratuit = environ 3 000 photos. Rapport e-mail : 20 photos / 8 Mo maximum en pièces jointes, les suivantes restent consultables dans l'application.
+- **Migration 004** (création des types de congés par les RH) : `supabase/migration_004_types_rh.sql`, appliquée.
 - **Migration 003** (types de congés, compteurs) : `supabase/migration_003_conges.sql`, déjà appliquée et intégrée à `schema.sql`.
 - **Impression** : bouton 🖨 sur chaque écran concerné ; choisir « Enregistrer au format PDF » comme imprimante pour obtenir un PDF.
 - **Migration 002** (photos) : `supabase/migration_002_photos.sql`, déjà appliquée au projet et intégrée à `schema.sql` pour une nouvelle installation.
