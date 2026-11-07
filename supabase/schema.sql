@@ -423,3 +423,147 @@ create index if not exists idx_oa_user on public.overtime_adjustments(user_id);
 --    update public.profiles set role = 'admin', must_change_password = false,
 --      full_name = 'Mathieu Maréchal' where email = 'VOTRE_EMAIL';
 -- =====================================================================
+
+-- =====================================================================
+-- Migration 002 : photos de réalisation par chantier et par journée
+-- =====================================================================
+create table if not exists public.mission_photos (
+  id bigint generated always as identity primary key,
+  mission_id bigint not null references public.missions(id) on delete cascade,
+  work_date date not null,
+  user_id uuid references public.profiles(id) on delete set null,
+  path text not null,
+  caption text,
+  created_at timestamptz not null default now()
+);
+create index if not exists idx_photos_mission on public.mission_photos(mission_id, work_date);
+
+alter table public.mission_photos enable row level security;
+
+drop policy if exists ph_sel on public.mission_photos;
+drop policy if exists ph_ins on public.mission_photos;
+drop policy if exists ph_upd on public.mission_photos;
+drop policy if exists ph_del on public.mission_photos;
+
+-- Lecture : admin/RH et membres de l'équipe
+create policy ph_sel on public.mission_photos for select to authenticated
+  using (is_staff() or is_member(mission_id));
+-- Ajout : membre de l'équipe tant que la journée n'est pas signée, admin/RH toujours
+create policy ph_ins on public.mission_photos for insert to authenticated
+  with check (is_staff() or (user_id = auth.uid() and is_member(mission_id)
+    and not exists (select 1 from day_reports d where d.mission_id = mission_photos.mission_id and d.work_date = mission_photos.work_date)));
+create policy ph_upd on public.mission_photos for update to authenticated
+  using (is_staff() or user_id = auth.uid()) with check (is_staff() or user_id = auth.uid());
+-- Suppression : auteur avant signature, admin/RH toujours
+create policy ph_del on public.mission_photos for delete to authenticated
+  using (is_staff() or (user_id = auth.uid()
+    and not exists (select 1 from day_reports d where d.mission_id = mission_photos.mission_id and d.work_date = mission_photos.work_date)));
+
+-- Stockage : chemin <mission_id>/<date>/<fichier>.jpg
+insert into storage.buckets (id, name, public) values ('mission-photos','mission-photos', false) on conflict do nothing;
+
+drop policy if exists mp_read on storage.objects;
+drop policy if exists mp_write on storage.objects;
+drop policy if exists mp_delete on storage.objects;
+
+create policy mp_read on storage.objects for select to authenticated
+  using (bucket_id = 'mission-photos' and (is_staff() or is_member(((storage.foldername(name))[1])::bigint)));
+create policy mp_write on storage.objects for insert to authenticated
+  with check (bucket_id = 'mission-photos' and (is_staff() or is_member(((storage.foldername(name))[1])::bigint)));
+create policy mp_delete on storage.objects for delete to authenticated
+  using (bucket_id = 'mission-photos' and (is_staff() or owner_id = auth.uid()::text));
+
+-- =====================================================================
+-- Migration 003 : types de congés paramétrables et compteurs annuels
+-- =====================================================================
+
+-- ---------- Types de congés ----------
+create table if not exists public.leave_types (
+  code text primary key,
+  label text not null,
+  unit text not null default 'jours' check (unit in ('jours','heures')),
+  has_counter boolean not null default true,      -- solde annuel suivi
+  deducts_overtime boolean not null default false, -- débite le compteur d'heures sup.
+  color text not null default '#95C11F',
+  sort int not null default 10,
+  active boolean not null default true
+);
+insert into public.leave_types (code, label, unit, has_counter, deducts_overtime, color, sort) values
+  ('conge','Congé annuel','jours',true,false,'#95C11F',1),
+  ('recuperation','Récupération (heures sup.)','heures',false,true,'#F18E15',2),
+  ('maladie','Maladie','jours',false,false,'#c8382c',3),
+  ('autre','Autre absence','jours',false,false,'#77716d',9)
+on conflict (code) do nothing;
+
+-- ---------- Demandes : type libre + quantité ----------
+alter table public.leave_requests alter column type drop default;
+alter table public.leave_requests alter column type type text using type::text;
+alter table public.leave_requests alter column type set default 'conge';
+do $$ begin
+  alter table public.leave_requests add constraint leave_requests_type_fk
+    foreign key (type) references public.leave_types(code) on update cascade;
+exception when duplicate_object then null; end $$;
+alter table public.leave_requests add column if not exists amount numeric(6,2);
+
+-- Jours ouvrables (lundi à vendredi) entre deux dates incluses
+create or replace function public.business_days(d1 date, d2 date) returns int
+language sql immutable as $$
+  select count(*)::int from generate_series(d1, d2, interval '1 day') g where extract(isodow from g) < 6
+$$;
+
+update public.leave_requests r set amount = case when t.unit = 'heures' then coalesce(r.hours, 0)
+  else public.business_days(r.start_date, r.end_date) end
+from public.leave_types t where t.code = r.type and r.amount is null;
+
+-- ---------- Allocations annuelles par collaborateur ----------
+create table if not exists public.leave_allocations (
+  id bigint generated always as identity primary key,
+  user_id uuid not null references public.profiles(id) on delete cascade,
+  type_code text not null references public.leave_types(code) on update cascade on delete cascade,
+  year int not null,
+  amount numeric(6,2) not null default 0,
+  note text,
+  updated_by uuid references public.profiles(id),
+  updated_at timestamptz not null default now(),
+  unique (user_id, type_code, year)
+);
+
+-- ---------- Débit heures sup. selon le type ----------
+create or replace function public.leave_overtime_sync() returns trigger
+language plpgsql security definer set search_path = public as $$
+declare ded boolean; qty numeric;
+begin
+  select deducts_overtime into ded from leave_types where code = new.type;
+  qty := coalesce(new.amount, new.hours, 0);
+  -- Toute modification d'une demande approuvée : on recalcule le mouvement
+  delete from overtime_adjustments where leave_request_id = new.id;
+  if coalesce(ded, false) and new.status = 'approuvee' and qty > 0 then
+    insert into overtime_adjustments (user_id, hours, reason, leave_request_id, created_by)
+    values (new.user_id, -qty, 'Récupération du ' || to_char(new.start_date,'DD/MM/YYYY'), new.id, auth.uid());
+  end if;
+  return new;
+end $$;
+
+drop trigger if exists leave_overtime on public.leave_requests;
+create trigger leave_overtime after update on public.leave_requests
+  for each row execute function public.leave_overtime_sync();
+
+-- ---------- Sécurité ----------
+alter table public.leave_types enable row level security;
+alter table public.leave_allocations enable row level security;
+
+drop policy if exists lt_sel on public.leave_types;
+drop policy if exists lt_all on public.leave_types;
+create policy lt_sel on public.leave_types for select to authenticated using (true);
+create policy lt_all on public.leave_types for all to authenticated using (is_admin()) with check (is_admin());
+
+drop policy if exists la_sel on public.leave_allocations;
+drop policy if exists la_all on public.leave_allocations;
+create policy la_sel on public.leave_allocations for select to authenticated using (user_id = auth.uid() or is_staff());
+create policy la_all on public.leave_allocations for all to authenticated using (is_staff()) with check (is_staff());
+
+-- Admin/RH : correction et suppression des mouvements d'heures sup.
+drop policy if exists oa_upd on public.overtime_adjustments;
+drop policy if exists oa_del on public.overtime_adjustments;
+create policy oa_upd on public.overtime_adjustments for update to authenticated using (is_staff()) with check (is_staff());
+create policy oa_del on public.overtime_adjustments for delete to authenticated using (is_staff());
